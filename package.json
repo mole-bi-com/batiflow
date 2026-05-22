@@ -1,0 +1,42 @@
+{
+  "name": "batiflow",
+  "version": "1.0.0",
+  "description": "Intelligent Chrome CDP Capture Harness & Local Second Brain",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "ts-node packages/capture/index.ts",
+    "auth:linkedin": "ts-node packages/capture/cdp/auth.ts",
+    "auth:x": "ts-node packages/capture/cdp/auth-x.ts",
+    "auth:threads": "ts-node packages/capture/cdp/auth-threads.ts",
+    "auth:instagram": "ts-node packages/capture/cdp/auth-instagram.ts",
+    "worker:sync": "ts-node packages/capture/worker/IngestWorker.ts --sync",
+    "worker:register": "ts-node packages/capture/worker/IngestWorker.ts --register-plist",
+    "test:cdp": "ts-node packages/capture/tests/test-cdp.ts",
+    "test:linkedin:recon": "ts-node packages/capture/tests/test-linkedin-recon.ts",
+    "test:linkedin:capture": "ts-node packages/capture/tests/test-linkedin-capture.ts",
+    "test:x:capture": "ts-node packages/capture/tests/test-linkedin-capture.ts"
+  },
+  "keywords": [
+    "cdp",
+    "chrome",
+    "playwright",
+    "scraper",
+    "second-brain"
+  ],
+  "author": "BatiFlow Team",
+  "license": "MIT",
+  "dependencies": {
+    "chrome-remote-interface": "^0.33.0",
+    "dotenv": "^17.4.2",
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "@types/dotenv": "^6.1.1",
+    "@types/node": "^20.11.24",
+    "@types/ws": "^8.5.10",
+    "playwright": "^1.42.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+}

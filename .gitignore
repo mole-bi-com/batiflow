@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+
+# Environment & Secrets
+.env
+.env.local
+.env*.local
+
+# Encrypted session files (contain login credentials)
+**/*.enc.json
+**/*.enc
+
+# Compiled output
+dist/
+
+# Scraped raw data (can be large & personal)
+scrap/
+
+# Obsidian vault notes (personal content)
+vault/Inbox/
+vault/.obsidian/workspace*
+vault/.obsidian/cache
+
+# macOS system files
+.DS_Store
+**/.DS_Store
+
+# LaunchAgent plist (machine-specific paths)
+com.batiflow.ingest.plist
+
+# Worker state registry (machine-specific)
+packages/capture/worker/ingest-registry.json
+
+# Logs
+*.log
+*.err
