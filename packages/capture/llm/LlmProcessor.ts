@@ -174,6 +174,58 @@ ${comments.length > 0 ? comments.map((c, i) => `Comment #${i+1}: ${c}`).join('\n
     }
   }
 
+  public async reviseMarkdown(markdown: string, instruction: string): Promise<string> {
+    if (!this.isConfigured()) {
+      throw new Error('DEEPSEEK_API_KEY is missing or empty in .env.');
+    }
+
+    const endpoint = `${this.apiBase}/chat/completions`;
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${this.apiKey}`
+      },
+      body: JSON.stringify({
+        model: this.model,
+        messages: [
+          {
+            role: 'system',
+            content: `You revise an existing BatiFlow Markdown analysis according to the user's follow-up request.
+Return the complete revised Markdown document only.
+Preserve source URLs, factual source content, and YAML frontmatter unless the user explicitly requests otherwise.
+Do not mention that you revised the document. Write Korean analysis unless the user requests another language.`
+          },
+          {
+            role: 'user',
+            content: `## Follow-up request
+${instruction}
+
+## Existing Markdown
+${markdown}`
+          }
+        ],
+        thinking: {
+          type: 'enabled'
+        },
+        reasoning_effort: 'high'
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`DeepSeek API returned status ${response.status}: ${errorText}`);
+    }
+
+    const responseData: any = await response.json();
+    const content = responseData.choices?.[0]?.message?.content?.trim();
+    if (!content) {
+      throw new Error('DeepSeek did not return revised Markdown.');
+    }
+
+    return content.replace(/^```(?:markdown)?\s*/i, '').replace(/\s*```$/, '');
+  }
+
   /**
    * Executes deep analysis of YouTube transcripts using DeepSeek v4 Pro with Thinking Mode
    * based on the custom "YouTube 스크립트 정리 프롬프트"

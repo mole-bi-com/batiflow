@@ -161,6 +161,10 @@ else
 fi
 bash "$HERMES_REPO/setup-hermes.sh"
 
+step "Installing BatiFlow Hermes skill"
+mkdir -p "$HERMES_DIR/skills/batiflow-followup"
+cp "$PROJECT_DIR/skills/batiflow-followup/SKILL.md" "$HERMES_DIR/skills/batiflow-followup/SKILL.md"
+
 step "Restoring non-secret Hermes assets from Google Drive"
 for asset in config.yaml SOUL.md; do
   if [[ -f "$VAULT_PATH/setup/$asset" ]]; then

@@ -105,6 +105,7 @@ ${analysis}
     fs.writeFileSync(path.join(scrapYoutubeDir, 'transcript.txt'), transcript, 'utf8');
 
     console.log(`\n🎉 SUCCESS: Saved to Obsidian Vault -> vault/YouTube/${todayStr}/${markdownFilename}`);
+    console.log(`BATIFLOW_RESULT_PATH=${vaultMarkdownPath}`);
     
     // Save to registry
     try {

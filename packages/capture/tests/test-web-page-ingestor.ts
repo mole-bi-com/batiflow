@@ -61,13 +61,28 @@ async function run(): Promise<void> {
   } as unknown as LlmProcessor;
 
   try {
-    const result = await new WebPageIngestor(fakeLlm).ingest(url);
+    const ingestor = new WebPageIngestor(fakeLlm);
+    const result = await ingestor.ingest(url);
     const markdown = fs.readFileSync(result.markdownPath, 'utf8');
 
     assert.strictEqual(result.title, 'Test Article');
     assert.strictEqual(result.summary, '테스트 웹페이지 요약');
     assert.match(markdown, /This is a sufficiently long article body/);
     assert.doesNotMatch(markdown, /This navigation should be removed/);
+
+    const revisionLlm = {
+      reviseMarkdown: async () => '# 구조적 재분석\n\n인과 구조를 중심으로 다시 분석했습니다.'
+    } as unknown as LlmProcessor;
+    const revisedPath = await new WebPageIngestor(revisionLlm).revise(
+      result.markdownPath,
+      '좀 더 구조적이고 분석적으로 이해하고 싶어'
+    );
+
+    assert.strictEqual(revisedPath, result.markdownPath);
+    assert.strictEqual(
+      fs.readFileSync(revisedPath, 'utf8'),
+      '# 구조적 재분석\n\n인과 구조를 중심으로 다시 분석했습니다.'
+    );
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
     fs.rmSync(vaultPath, { recursive: true, force: true });

@@ -52,6 +52,23 @@ export class WebPageIngestor {
     };
   }
 
+  public async revise(markdownPath: string, instruction: string): Promise<string> {
+    const resolvedPath = path.resolve(markdownPath);
+    if (!fs.existsSync(resolvedPath) || path.extname(resolvedPath).toLowerCase() !== '.md') {
+      throw new Error(`수정할 Markdown 파일을 찾을 수 없습니다: ${resolvedPath}`);
+    }
+    if (!instruction.trim()) {
+      throw new Error('추가 분석 요구사항이 비어 있습니다.');
+    }
+
+    const existingMarkdown = fs.readFileSync(resolvedPath, 'utf8');
+    const revisedMarkdown = await this.llmProcessor.reviseMarkdown(existingMarkdown, instruction.trim());
+    const temporaryPath = `${resolvedPath}.tmp`;
+    fs.writeFileSync(temporaryPath, revisedMarkdown, 'utf8');
+    fs.renameSync(temporaryPath, resolvedPath);
+    return resolvedPath;
+  }
+
   private async capture(url: string): Promise<WebPageContent> {
     const browser = await chromium.launch({ headless: true });
     try {

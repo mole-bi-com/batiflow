@@ -627,6 +627,7 @@ if (require.main === module) {
           registry.processedUrls[url] = new Date().toISOString();
           worker.saveRegistry(registry);
           console.log(`🎉 Success: Ingested single URL and registered to database.`);
+          console.log(`BATIFLOW_RESULT_PATH=${path.join(result.scrapPath, 'post.md')}`);
         } else {
           console.error(`❌ Capture failed for: ${url}`);
           process.exit(1);

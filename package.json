@@ -12,6 +12,8 @@
     "auth:instagram": "ts-node packages/capture/cdp/auth-instagram.ts",
     "auth:youtube": "ts-node packages/capture/cdp/auth-youtube.ts",
     "ingest:youtube": "ts-node packages/capture/youtube/ingest-single-youtube.ts",
+    "ingest:web": "ts-node packages/capture/telegram/ingest-web-page.ts",
+    "revise:markdown": "ts-node packages/capture/telegram/revise-markdown.ts",
     "worker:sync": "ts-node packages/capture/worker/IngestWorker.ts --sync",
     "worker:register": "ts-node packages/capture/worker/IngestWorker.ts --register-plist",
     "test:cdp": "ts-node packages/capture/tests/test-cdp.ts",
