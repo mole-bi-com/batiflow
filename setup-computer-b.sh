@@ -26,12 +26,11 @@ trap 'die "Setup failed on line $LINENO. Fix the reported error and rerun this s
 find_vault() {
   local drive_dir vault
   while IFS= read -r drive_dir; do
-    for vault in "$drive_dir/My Drive/batiflow-vault" "$drive_dir/내 드라이브/batiflow-vault"; do
-      if [[ -d "$vault" ]]; then
-        printf '%s\n' "$vault"
-        return 0
-      fi
-    done
+    vault="$(find "$drive_dir" -mindepth 2 -maxdepth 2 -type d -name 'batiflow-vault' -print -quit 2>/dev/null || true)"
+    if [[ -n "$vault" ]]; then
+      printf '%s\n' "$vault"
+      return 0
+    fi
   done < <(find "$HOME/Library/CloudStorage" -maxdepth 1 -type d -name 'GoogleDrive-*' 2>/dev/null | sort)
   return 1
 }
@@ -174,7 +173,7 @@ done
 for asset_dir in skills scripts; do
   if [[ -d "$VAULT_PATH/setup/$asset_dir" ]]; then
     mkdir -p "$HERMES_DIR/$asset_dir"
-    cp -R "$VAULT_PATH/setup/$asset_dir/." "$HERMES_DIR/$asset_dir/"
+    rsync -a --ignore-existing "$VAULT_PATH/setup/$asset_dir/" "$HERMES_DIR/$asset_dir/"
   fi
 done
 
@@ -184,10 +183,16 @@ TELEGRAM_HOME_CHANNEL="${TELEGRAM_HOME_CHANNEL:-$(read_env_value "$SECRETS_FILE"
 if [[ -z "$TELEGRAM_HOME_CHANNEL" ]]; then
   read -r -p "Enter TELEGRAM_HOME_CHANNEL chat ID for Hermes (leave blank to skip): " TELEGRAM_HOME_CHANNEL
 fi
+TELEGRAM_ALLOWED_USERS="$(read_env_value "$HERMES_ENV" TELEGRAM_ALLOWED_USERS)"
+TELEGRAM_ALLOWED_USERS="${TELEGRAM_ALLOWED_USERS:-$(read_env_value "$SECRETS_FILE" TELEGRAM_ALLOWED_USERS)}"
+if [[ -z "$TELEGRAM_ALLOWED_USERS" && "$TELEGRAM_HOME_CHANNEL" =~ ^[0-9]+$ ]]; then
+  TELEGRAM_ALLOWED_USERS="$TELEGRAM_HOME_CHANNEL"
+fi
 upsert_env_value "$HERMES_ENV" DEEPSEEK_API_KEY "$DEEPSEEK_API_KEY"
 upsert_env_value "$HERMES_ENV" TELEGRAM_BOT_TOKEN "$TELEGRAM_BOT_TOKEN"
 upsert_env_value "$HERMES_ENV" OBSIDIAN_VAULT_PATH "$VAULT_PATH"
 upsert_env_value "$HERMES_ENV" TELEGRAM_HOME_CHANNEL "$TELEGRAM_HOME_CHANNEL"
+upsert_env_value "$HERMES_ENV" TELEGRAM_ALLOWED_USERS "$TELEGRAM_ALLOWED_USERS"
 chmod 600 "$HERMES_ENV"
 
 HERMES_BIN="$(command -v hermes || true)"
@@ -195,7 +200,7 @@ if [[ -z "$HERMES_BIN" && -x "$HOME/.local/bin/hermes" ]]; then
   HERMES_BIN="$HOME/.local/bin/hermes"
 fi
 [[ -n "$HERMES_BIN" ]] || die "Hermes installer completed but the hermes command was not found."
-"$HERMES_BIN" gateway start
+"$HERMES_BIN" gateway restart
 
 printf '\nSETUP COMPLETE\n'
 printf 'Vault: %s\nProject: %s\n' "$VAULT_PATH" "$PROJECT_DIR"
