@@ -32,6 +32,50 @@ export interface LlmAnalysisResult {
   };
 }
 
+const FOLLOWUP_START = '<!-- BATIFLOW_FOLLOWUP_START -->';
+const FOLLOWUP_END = '<!-- BATIFLOW_FOLLOWUP_END -->';
+
+export function stripFollowupAnalysis(markdown: string): string {
+  const startIndex = markdown.indexOf(FOLLOWUP_START);
+  const endIndex = markdown.lastIndexOf(FOLLOWUP_END);
+  if (startIndex >= 0 && endIndex > startIndex) {
+    return `${markdown.slice(0, startIndex).trimEnd()}
+
+${markdown.slice(endIndex + FOLLOWUP_END.length).trimStart()}`.trimEnd();
+  }
+
+  return markdown.replaceAll(FOLLOWUP_START, '').replaceAll(FOLLOWUP_END, '').trimEnd();
+}
+
+export function mergeFollowupAnalysis(markdown: string, analysis: string): string {
+  const withoutPreviousFollowup = stripFollowupAnalysis(markdown);
+  const sanitizedAnalysis = analysis
+    .replaceAll(FOLLOWUP_START, '')
+    .replaceAll(FOLLOWUP_END, '')
+    .replace(/^## 추가 분석\s*/i, '')
+    .trim();
+  const followupSection = `${FOLLOWUP_START}
+## 추가 분석
+
+${sanitizedAnalysis}
+${FOLLOWUP_END}`;
+  const originalSectionIndex = withoutPreviousFollowup.indexOf('\n## 원문\n');
+
+  if (originalSectionIndex >= 0) {
+    return `${withoutPreviousFollowup.slice(0, originalSectionIndex).trimEnd()}
+
+${followupSection}
+
+${withoutPreviousFollowup.slice(originalSectionIndex).trimStart()}
+`;
+  }
+
+  return `${withoutPreviousFollowup}
+
+${followupSection}
+`;
+}
+
 export class LlmProcessor {
   private apiKey: string;
   private model: string;
@@ -191,10 +235,11 @@ ${comments.length > 0 ? comments.map((c, i) => `Comment #${i+1}: ${c}`).join('\n
         messages: [
           {
             role: 'system',
-            content: `You revise an existing BatiFlow Markdown analysis according to the user's follow-up request.
-Return the complete revised Markdown document only.
-Preserve source URLs, factual source content, and YAML frontmatter unless the user explicitly requests otherwise.
-Do not mention that you revised the document. Write Korean analysis unless the user requests another language.`
+            content: `You create a focused follow-up analysis for an existing BatiFlow Markdown note.
+Return only the new or updated analytical content requested by the user.
+Do not return YAML frontmatter, the original article text, a document title, or conversational commentary.
+Cover every item explicitly requested by the user; do not stop after completing only some requested sections.
+Use clear Markdown headings below level 2. Write Korean analysis unless the user requests another language.`
           },
           {
             role: 'user',
@@ -202,13 +247,14 @@ Do not mention that you revised the document. Write Korean analysis unless the u
 ${instruction}
 
 ## Existing Markdown
-${markdown}`
+${stripFollowupAnalysis(markdown)}`
           }
         ],
         thinking: {
           type: 'enabled'
         },
-        reasoning_effort: 'high'
+        reasoning_effort: 'low',
+        max_tokens: 3500
       })
     });
 
@@ -223,7 +269,8 @@ ${markdown}`
       throw new Error('DeepSeek did not return revised Markdown.');
     }
 
-    return content.replace(/^```(?:markdown)?\s*/i, '').replace(/\s*```$/, '');
+    const followupAnalysis = content.replace(/^```(?:markdown)?\s*/i, '').replace(/\s*```$/, '');
+    return mergeFollowupAnalysis(markdown, followupAnalysis);
   }
 
   /**

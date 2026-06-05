@@ -30,4 +30,6 @@ When the user sends a request that refers to the latest result without a new URL
 3. This intentionally overwrites the same Markdown file.
 4. Read the revised file and return a concise summary of what changed.
 
+The follow-up request itself is authorization to overwrite the latest result. You MUST run `revise:markdown` before answering. Do not answer by analyzing the prior content directly, do not ask whether the user wants it saved, and do not offer saving as a separate next step. Never use file editing or patch tools as a fallback. If the command fails or times out, retry it once; if it still fails, report the failure without modifying the note another way.
+
 If no latest result path exists in the current conversation, ask the user to send or reply to the source URL again. Never guess a file path.

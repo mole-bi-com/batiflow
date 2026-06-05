@@ -19,6 +19,8 @@ grep -q 'read -r -s' "$SETUP_SCRIPT" || fail "secret values are not entered sile
 grep -q 'chmod 600' "$SETUP_SCRIPT" || fail "local env permissions are not restricted"
 grep -q 'worker:register' "$SETUP_SCRIPT" || fail "daily sync LaunchAgent registration is missing"
 grep -q 'gateway start' "$SETUP_SCRIPT" || fail "Hermes Gateway startup is missing"
+grep -q 'skills/batiflow-followup/SKILL.md' "$SETUP_SCRIPT" || fail "BatiFlow follow-up skill installation is missing"
+grep -q 'MUST run `revise:markdown` before answering' "$ROOT_DIR/skills/batiflow-followup/SKILL.md" || fail "follow-up overwrite execution is not mandatory"
 grep -q 'upsert_env_value' "$SETUP_SCRIPT" || fail "Hermes env values are overwritten instead of merged"
 grep -q 'youtube-transcript-api' "$SETUP_SCRIPT" || fail "Python YouTube transcript dependency is missing"
 grep -q 'Downloads/batiflow-computer-b-secrets.txt' "$SETUP_SCRIPT" || fail "Downloads secret handoff file is not supported"

@@ -22,10 +22,12 @@ interface WebPageContent {
 export class WebPageIngestor {
   private projectRoot: string;
   private llmProcessor: LlmProcessor;
+  private revisionVerificationDelayMs: number;
 
-  constructor(llmProcessor = new LlmProcessor()) {
+  constructor(llmProcessor = new LlmProcessor(), revisionVerificationDelayMs = 15000) {
     this.projectRoot = path.resolve(__dirname, '../../../');
     this.llmProcessor = llmProcessor;
+    this.revisionVerificationDelayMs = revisionVerificationDelayMs;
   }
 
   public async ingest(url: string): Promise<WebPageIngestResult> {
@@ -63,10 +65,33 @@ export class WebPageIngestor {
 
     const existingMarkdown = fs.readFileSync(resolvedPath, 'utf8');
     const revisedMarkdown = await this.llmProcessor.reviseMarkdown(existingMarkdown, instruction.trim());
-    const temporaryPath = `${resolvedPath}.tmp`;
-    fs.writeFileSync(temporaryPath, revisedMarkdown, 'utf8');
-    fs.renameSync(temporaryPath, resolvedPath);
+    this.writeRevision(resolvedPath, revisedMarkdown);
+    this.saveRevisionBackup(revisedMarkdown);
+
+    if (this.revisionVerificationDelayMs > 0) {
+      await new Promise(resolve => setTimeout(resolve, this.revisionVerificationDelayMs));
+      if (fs.readFileSync(resolvedPath, 'utf8') !== revisedMarkdown) {
+        this.writeRevision(resolvedPath, revisedMarkdown);
+        this.saveRevisionBackup(revisedMarkdown);
+      }
+    }
     return resolvedPath;
+  }
+
+  private writeRevision(markdownPath: string, markdown: string): void {
+    const temporaryPath = `${markdownPath}.tmp`;
+    fs.writeFileSync(temporaryPath, markdown, 'utf8');
+    fs.renameSync(temporaryPath, markdownPath);
+  }
+
+  private saveRevisionBackup(markdown: string): void {
+    const sourceUrl = markdown.match(/^source:\s*"([^"]+)"/m)?.[1];
+    if (!sourceUrl) return;
+
+    const id = crypto.createHash('sha256').update(sourceUrl).digest('hex').slice(0, 12);
+    const scrapDir = path.join(this.projectRoot, 'scrap', 'web', id);
+    fs.mkdirSync(scrapDir, { recursive: true });
+    fs.writeFileSync(path.join(scrapDir, 'page.md'), markdown, 'utf8');
   }
 
   private async capture(url: string): Promise<WebPageContent> {

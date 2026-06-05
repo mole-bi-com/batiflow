@@ -5,9 +5,34 @@ import * as http from 'http';
 import * as os from 'os';
 import * as path from 'path';
 import { LlmProcessor } from '../llm/LlmProcessor';
+import { mergeFollowupAnalysis, stripFollowupAnalysis } from '../llm/LlmProcessor';
 import { WebPageIngestor } from '../telegram/WebPageIngestor';
 
 async function run(): Promise<void> {
+  const merged = mergeFollowupAnalysis(
+    '# Note\n\n## Summary\n\nOriginal summary\n\n## 원문\n\nOriginal body',
+    '### 구조 분석\n\nNew analysis'
+  );
+  assert.match(merged, /Original summary/);
+  assert.match(merged, /<!-- BATIFLOW_FOLLOWUP_START -->/);
+  assert.match(merged, /### 구조 분석/);
+  assert.ok(merged.indexOf('### 구조 분석') < merged.indexOf('## 원문'));
+  assert.strictEqual((merged.match(/Original body/g) || []).length, 1);
+
+  const remerged = mergeFollowupAnalysis(merged, '### 반론\n\nReplacement analysis');
+  assert.doesNotMatch(remerged, /New analysis/);
+  assert.match(remerged, /Replacement analysis/);
+  assert.strictEqual((remerged.match(/BATIFLOW_FOLLOWUP_START/g) || []).length, 1);
+
+  const nested = mergeFollowupAnalysis(
+    `${merged}\n<!-- BATIFLOW_FOLLOWUP_START -->\nNested\n<!-- BATIFLOW_FOLLOWUP_END -->`,
+    '<!-- BATIFLOW_FOLLOWUP_START -->\n## 추가 분석\nClean replacement\n<!-- BATIFLOW_FOLLOWUP_END -->'
+  );
+  assert.strictEqual((nested.match(/BATIFLOW_FOLLOWUP_START/g) || []).length, 1);
+  assert.strictEqual((nested.match(/BATIFLOW_FOLLOWUP_END/g) || []).length, 1);
+  assert.match(nested, /Clean replacement/);
+  assert.doesNotMatch(stripFollowupAnalysis(nested), /Clean replacement/);
+
   const vaultPath = fs.mkdtempSync(path.join(os.tmpdir(), 'batiflow-web-test-'));
   process.env.OBSIDIAN_VAULT_PATH = vaultPath;
 
@@ -73,7 +98,7 @@ async function run(): Promise<void> {
     const revisionLlm = {
       reviseMarkdown: async () => '# 구조적 재분석\n\n인과 구조를 중심으로 다시 분석했습니다.'
     } as unknown as LlmProcessor;
-    const revisedPath = await new WebPageIngestor(revisionLlm).revise(
+    const revisedPath = await new WebPageIngestor(revisionLlm, 0).revise(
       result.markdownPath,
       '좀 더 구조적이고 분석적으로 이해하고 싶어'
     );
