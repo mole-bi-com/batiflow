@@ -4,6 +4,8 @@ import * as dotenv from 'dotenv';
 import TelegramBot from 'node-telegram-bot-api';
 import { YoutubeExtractor } from '../youtube/YoutubeExtractor';
 import { LlmProcessor } from '../llm/LlmProcessor';
+import { classifyTelegramLink } from './TelegramLinkRouter';
+import { WebPageIngestor } from './WebPageIngestor';
 
 // Load environment variables
 const projectRoot = path.resolve(__dirname, '../../../');
@@ -28,6 +30,7 @@ const bot = new TelegramBot(token, { polling: true });
 
 const extractor = new YoutubeExtractor();
 const llmProcessor = new LlmProcessor();
+const webPageIngestor = new WebPageIngestor(llmProcessor);
 
 /**
  * Sanitizes strings so they can be safely used as macOS/Windows filenames.
@@ -42,15 +45,15 @@ bot.onText(/\/start/, (msg) => {
   const username = msg.chat.username || msg.chat.first_name || 'User';
   
   const welcomeText = `안녕하세요, ${username}님! 🧠✨
-**BatiFlow YouTube Intelligence Brain Engine** (@SwooshMaltBot) 입니다.
+**BatiFlow Intelligence Brain Engine** (@SwooshMaltBot) 입니다.
 
-이곳으로 유튜브 영상 링크를 보내주시면, 다음 작업을 자동으로 처리해 드립니다:
-1. ⏳ **자막(스크립트) 자동 추출** (한국어 우선 추출 및 시간대 매핑)
+이곳으로 유튜브 영상이나 일반 웹페이지 링크를 보내주시면, 다음 작업을 자동으로 처리해 드립니다:
+1. ⏳ **콘텐츠 자동 추출** (유튜브 자막 또는 웹페이지 본문)
 2. 🧠 **DeepSeek v4 Pro Brain Engine 분석** (가치사슬, 인과 모델, 교차 도메인 연결 등 심층 재정렬)
 3. 📂 **로컬 Obsidian Vault 동적 저장** (\`vault/Inbox/\` 아래 마크다운 노트와 추론 트레이스 자동 적재)
 4. 📥 **텔레그램 결과물 피드백** (핵심 요약 텍스트 전송 및 전체 마크다운 파일 첨부)
 
-지금 바로 요약하고 싶은 유튜브 링크를 보내보세요! 🚀`;
+지금 바로 요약하고 싶은 링크를 보내보세요! 🚀`;
 
   bot.sendMessage(chatId, welcomeText, { parse_mode: 'Markdown' });
 });
@@ -63,17 +66,35 @@ bot.on('message', async (msg) => {
   // Skip slash commands
   if (text.startsWith('/')) return;
 
-  // Extract YouTube Video ID
-  const videoId = YoutubeExtractor.extractVideoId(text);
-  if (!videoId) {
-    // If it's a URL but not a YouTube URL
-    if (text.startsWith('http://') || text.startsWith('https://')) {
-      bot.sendMessage(chatId, '⚠️ 보낸 링크가 올바른 유튜브 영상 링크가 아닙니다. 다시 확인해 주세요.');
+  const link = classifyTelegramLink(text);
+  if (link.kind === 'unsupported') {
+    return;
+  }
+
+  if (link.kind === 'web') {
+    console.log(`\n📬 [TelegramBot] Received web URL: ${link.url} from chat ID: ${chatId}`);
+    const statusMsg = await bot.sendMessage(chatId, '⏳ 웹페이지 본문을 읽고 분석하는 중입니다...');
+
+    try {
+      const result = await webPageIngestor.ingest(link.url);
+      await bot.editMessageText(
+        `🎉 웹페이지 분석이 완료되었습니다!\n\n제목: ${result.title}\n\n핵심 요약:\n${result.summary}`,
+        { chat_id: chatId, message_id: statusMsg.message_id }
+      );
+      await bot.sendDocument(chatId, result.markdownPath);
+      console.log(`[TelegramBot] Successfully analyzed web page: ${result.url}`);
+    } catch (error: any) {
+      console.error(`❌ [TelegramBot] Web pipeline failed for URL ${link.url}: ${error.message}`);
+      await bot.editMessageText(
+        `❌ 웹페이지 분석 중 오류가 발생했습니다.\n\n이유: ${error.message}`,
+        { chat_id: chatId, message_id: statusMsg.message_id }
+      );
     }
     return;
   }
 
-  const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+  const videoId = link.videoId;
+  const videoUrl = link.url;
   console.log(`\n📬 [TelegramBot] Received YouTube URL: ${videoUrl} from chat ID: ${chatId}`);
 
   // Send initial loading feedback
@@ -228,4 +249,4 @@ ${summaryText}
   }
 });
 
-console.log('✅ [TelegramBot] SwooshMaltBot listener is ONLINE and waiting for YouTube links! 🚀');
+console.log('✅ [TelegramBot] SwooshMaltBot listener is ONLINE and waiting for links! 🚀');
