@@ -22,7 +22,7 @@ grep -q 'worker:register' "$SETUP_SCRIPT" || fail "daily sync LaunchAgent regist
 grep -q 'gateway restart' "$SETUP_SCRIPT" || fail "Hermes Gateway restart is missing"
 grep -q 'skills/batiflow-followup/SKILL.md' "$SETUP_SCRIPT" || fail "BatiFlow follow-up skill installation is missing"
 grep -q 'rsync -a --ignore-existing' "$SETUP_SCRIPT" || fail "Google Drive assets overwrite freshly installed Hermes assets"
-grep -q 'MUST run `revise:markdown` before answering' "$ROOT_DIR/skills/batiflow-followup/SKILL.md" || fail "follow-up overwrite execution is not mandatory"
+grep -q 'MUST run `apply:markdown` before answering' "$ROOT_DIR/skills/batiflow-followup/SKILL.md" || fail "follow-up overwrite execution is not mandatory"
 grep -q 'upsert_env_value' "$SETUP_SCRIPT" || fail "Hermes env values are overwritten instead of merged"
 grep -q 'upsert_env_value "$HERMES_ENV" TELEGRAM_ALLOWED_USERS' "$SETUP_SCRIPT" || fail "Hermes Telegram user allowlist is not configured"
 grep -q 'youtube-transcript-api' "$SETUP_SCRIPT" || fail "Python YouTube transcript dependency is missing"

@@ -108,6 +108,16 @@ async function run(): Promise<void> {
       fs.readFileSync(revisedPath, 'utf8'),
       '# 구조적 재분석\n\n인과 구조를 중심으로 다시 분석했습니다.'
     );
+
+    fs.writeFileSync(result.markdownPath, markdown, 'utf8');
+    const appliedPath = await new WebPageIngestor(fakeLlm, 0).applyFollowup(
+      result.markdownPath,
+      '### 반론과 검증\n\n결정론적 병합 테스트'
+    );
+    const appliedMarkdown = fs.readFileSync(appliedPath, 'utf8');
+    assert.match(appliedMarkdown, /결정론적 병합 테스트/);
+    assert.match(appliedMarkdown, /This is a sufficiently long article body/);
+    assert.strictEqual((appliedMarkdown.match(/BATIFLOW_FOLLOWUP_START/g) || []).length, 1);
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
     fs.rmSync(vaultPath, { recursive: true, force: true });

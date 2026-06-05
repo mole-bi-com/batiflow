@@ -2,7 +2,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { chromium } from 'playwright';
-import { LlmAnalysisResult, LlmProcessor } from '../llm/LlmProcessor';
+import { LlmAnalysisResult, LlmProcessor, mergeFollowupAnalysis } from '../llm/LlmProcessor';
 
 export interface WebPageIngestResult {
   title: string;
@@ -65,6 +65,24 @@ export class WebPageIngestor {
 
     const existingMarkdown = fs.readFileSync(resolvedPath, 'utf8');
     const revisedMarkdown = await this.llmProcessor.reviseMarkdown(existingMarkdown, instruction.trim());
+    return this.persistRevision(resolvedPath, revisedMarkdown);
+  }
+
+  public async applyFollowup(markdownPath: string, followupAnalysis: string): Promise<string> {
+    const resolvedPath = path.resolve(markdownPath);
+    if (!fs.existsSync(resolvedPath) || path.extname(resolvedPath).toLowerCase() !== '.md') {
+      throw new Error(`수정할 Markdown 파일을 찾을 수 없습니다: ${resolvedPath}`);
+    }
+    if (!followupAnalysis.trim()) {
+      throw new Error('적용할 추가 분석이 비어 있습니다.');
+    }
+
+    const existingMarkdown = fs.readFileSync(resolvedPath, 'utf8');
+    const revisedMarkdown = mergeFollowupAnalysis(existingMarkdown, followupAnalysis);
+    return this.persistRevision(resolvedPath, revisedMarkdown);
+  }
+
+  private async persistRevision(resolvedPath: string, revisedMarkdown: string): Promise<string> {
     this.writeRevision(resolvedPath, revisedMarkdown);
     this.saveRevisionBackup(revisedMarkdown);
 

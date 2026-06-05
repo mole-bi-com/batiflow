@@ -13,6 +13,7 @@
     "auth:youtube": "ts-node packages/capture/cdp/auth-youtube.ts",
     "ingest:youtube": "ts-node packages/capture/youtube/ingest-single-youtube.ts",
     "ingest:web": "ts-node packages/capture/telegram/ingest-web-page.ts",
+    "apply:markdown": "ts-node packages/capture/telegram/apply-followup-markdown.ts",
     "revise:markdown": "ts-node packages/capture/telegram/revise-markdown.ts",
     "worker:sync": "ts-node packages/capture/worker/IngestWorker.ts --sync",
     "worker:register": "ts-node packages/capture/worker/IngestWorker.ts --register-plist",

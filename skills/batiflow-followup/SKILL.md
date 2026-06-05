@@ -25,11 +25,13 @@ After ingestion, capture the path printed as `BATIFLOW_RESULT_PATH`. Treat it as
 When the user sends a request that refers to the latest result without a new URL:
 
 1. Use the latest `BATIFLOW_RESULT_PATH` from the current conversation.
-2. Run:
-   `cd /Users/seungwoolee/Desktop/project/batiflow && npm run revise:markdown -- --path "<LATEST_PATH>" --instruction "<USER_REQUEST>"`
-3. This intentionally overwrites the same Markdown file.
-4. Read the revised file and return a concise summary of what changed.
+2. Read the latest Markdown and produce the complete requested follow-up analysis yourself.
+3. Write only that follow-up analysis to `/tmp/batiflow-followup.md`.
+4. Run:
+   `cd /Users/seungwoolee/Desktop/project/batiflow && npm run apply:markdown -- --path "<LATEST_PATH>" --analysis-file "/tmp/batiflow-followup.md"`
+5. This intentionally overwrites the same Markdown file.
+6. Read the revised file and return a concise summary of what changed.
 
-The follow-up request itself is authorization to overwrite the latest result. You MUST run `revise:markdown` before answering. Do not answer by analyzing the prior content directly, do not ask whether the user wants it saved, and do not offer saving as a separate next step. Never use file editing or patch tools as a fallback. If the command fails or times out, retry it once; if it still fails, report the failure without modifying the note another way.
+The follow-up request itself is authorization to overwrite the latest result. You MUST run `apply:markdown` before answering. Do not ask whether the user wants it saved, and do not offer saving as a separate next step. Never edit or patch the vault note directly. If the command fails or times out, retry it once; if it still fails, report the failure without modifying the note another way.
 
 If no latest result path exists in the current conversation, ask the user to send or reply to the source URL again. Never guess a file path.
