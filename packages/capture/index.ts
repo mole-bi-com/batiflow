@@ -17,11 +17,13 @@ import { ThreadsCapture } from './sources/threads/ThreadsCapture';
 import { ThreadsVerifier } from './sources/threads/ThreadsVerifier';
 import { InstagramCapture } from './sources/instagram/InstagramCapture';
 import { InstagramVerifier } from './sources/instagram/InstagramVerifier';
+import { isOlderThan24Hours } from './utils/date';
 
 
 export interface BatiFlowOptions {
   url: string;
   useFallback?: boolean;
+  filter24Hours?: boolean;
 }
 
 export async function runBatiFlowCapture(options: BatiFlowOptions) {
@@ -43,7 +45,7 @@ export async function runBatiFlowCapture(options: BatiFlowOptions) {
   }
   console.log(`[Pipeline] Detected platform: ${platform.toUpperCase()}`);
 
-  const headless = (platform === 'x' || platform === 'linkedin');
+  const headless = (platform === 'linkedin');
   const launcher = new ChromeLauncher({ headless });
   const pool = new TabPool();
 
@@ -171,114 +173,20 @@ export async function runBatiFlowCapture(options: BatiFlowOptions) {
     }
 
     // 6.5. DeepSeek Brain Engine Processing (Summary, Tagging, NER, Audit, Skill note candidate)
-    if (verificationReport && verificationReport.status === 'pass' && captureResult?.data && captureResult.scrapPath) {
-      const llmProcessor = new LlmProcessor();
-      if (llmProcessor.isConfigured()) {
-        try {
-          const data = captureResult.data;
-          const commentsList = data.comments.map((c: any) => `${c.author}: ${c.text}`);
-          
-          const llmResult = await llmProcessor.analyzePost(
-            data.author,
-            data.body,
-            data.url,
-            commentsList
-          );
-          
-          if (llmResult) {
-            const { analysis, reasoning } = llmResult;
-            const scrapPath = captureResult.scrapPath;
-            
-            // Save analysis.json
-            fs.writeFileSync(
-              path.join(scrapPath, 'analysis.json'),
-              JSON.stringify(analysis, null, 2),
-              'utf8'
-            );
-            
-            // Save reasoning_trace.txt
-            fs.writeFileSync(
-              path.join(scrapPath, 'reasoning_trace.txt'),
-              reasoning,
-              'utf8'
-            );
-            
-            console.log(`[Pipeline] Saved analysis.json and reasoning_trace.txt to: ${scrapPath}`);
-            
-            // Prepend LLM analysis frontmatter block to post.md
-            const postMdPath = path.join(scrapPath, 'post.md');
-            if (fs.existsSync(postMdPath)) {
-              const originalContent = fs.readFileSync(postMdPath, 'utf8');
-              
-              const nerSection = `
-- **People**: ${analysis.ner.people.length > 0 ? analysis.ner.people.map(p => `\`${p}\``).join(', ') : 'None'}
-- **Organizations**: ${analysis.ner.organizations.length > 0 ? analysis.ner.organizations.map(o => `\`${o}\``).join(', ') : 'None'}
-- **Products / Repos**: ${analysis.ner.products_or_repos.length > 0 ? analysis.ner.products_or_repos.map(r => `\`${r}\``).join(', ') : 'None'}
-- **Key Concepts**: ${analysis.ner.key_concepts.length > 0 ? analysis.ner.key_concepts.map(c => `\`${c}\``).join(', ') : 'None'}`;
-
-              const frontmatter = `---
-# 🧠 BatiFlow LLM Brain Engine (deepseek-v4-pro) Analysis
-> **DeepSeek Reasoning Trace**: [View reasoning_trace.txt](./reasoning_trace.txt)
-
-## 핵심 요약 (Executive Summary)
-${analysis.summary}
-
-## Semantic Tags
-${analysis.tags.map(t => `\`#${t}\``).join('  ')}
-
-## Named Entities (NER)
-${nerSection}
-
-## Scraping & Cleanup Audit
-- **LLM Context Audit Score**: \`${analysis.extraction_audit.score} / 1.0\`
-- **Cleanliness Rating**: ${analysis.extraction_audit.score >= 0.9 ? '✨ Pristine' : '⚠️ Minor UI remnants/mismatch'}
-- **Scraper Quality Feedback**: ${analysis.extraction_audit.issues_found.length > 0 ? analysis.extraction_audit.issues_found.join('; ') : 'No anomalies detected by LLM.'}
-
-${analysis.skill_note.has_candidate ? `### 💡 Suggested Scraper Improvement Candidate\n> ${analysis.skill_note.candidate_explanation}\n` : ''}---
-
-`;
-              fs.writeFileSync(postMdPath, frontmatter + originalContent, 'utf8');
-              console.log('[Pipeline] Beautiful LLM analysis successfully prepended to post.md!');
-
-              // Also copy to Obsidian Vault Inbox dynamically!
-              try {
-                const vaultInboxDir = path.join(__dirname, '../../vault/Inbox');
-                if (!fs.existsSync(vaultInboxDir)) {
-                  fs.mkdirSync(vaultInboxDir, { recursive: true });
-                }
-                
-                // Clean author name for filename
-                const cleanAuthor = data.author.replace(/[/\\?%*:|"<>]/g, '').trim() || 'Unknown';
-                // Extract a 35-character sanitized snippet of the body for a friendly note title
-                const bodyCleanedForTitle = data.body
-                  .replace(/[\r\n#*`_[\]()]/g, ' ')
-                  .replace(/\s+/g, ' ')
-                  .trim();
-                const bodySnippet = bodyCleanedForTitle.substring(0, 35).trim() || 'Captured Post';
-                
-                const noteFilename = `${cleanAuthor} - ${bodySnippet}.md`;
-                const notePath = path.join(vaultInboxDir, noteFilename);
-                
-                // Save directly to Obsidian vault Inbox
-                fs.writeFileSync(notePath, frontmatter + originalContent, 'utf8');
-                console.log(`[Pipeline] Automatically saved Obsidian Vault note: ${noteFilename}`);
-                
-                // Copy the reasoning trace to the vault Inbox with a matching name for referencing
-                const traceFilename = `${cleanAuthor} - ${bodySnippet} - reasoning_trace.txt`;
-                const tracePath = path.join(vaultInboxDir, traceFilename);
-                fs.writeFileSync(tracePath, reasoning, 'utf8');
-                console.log(`[Pipeline] Saved Obsidian Vault reasoning trace: ${traceFilename}`);
-              } catch (vaultErr: any) {
-                console.error(`⚠️ [Pipeline] Failed to export to Obsidian Vault: ${vaultErr.message}`);
-              }
-            }
-          }
-        } catch (llmErr: any) {
-          console.error(`⚠️ [Pipeline] DeepSeek post-processing encountered an error: ${llmErr.message}`);
-        }
-      } else {
-        console.log('\n🧠 [Pipeline] DeepSeek Brain Engine is skipped (DEEPSEEK_API_KEY is not set).');
+    if (captureResult?.data && captureResult.scrapPath) {
+      if (options.filter24Hours && isOlderThan24Hours(captureResult.data.dateText)) {
+        console.log(`[Pipeline] Post is older than 24 hours (${captureResult.data.dateText}). Skipping LLM processing.`);
+        await pool.releaseTab(client);
+        launcher.kill();
+        return {
+          engine: 'CDP_Chrome',
+          success: true,
+          scrapPath: captureResult.scrapPath,
+          score: verificationReport!.score,
+          skippedAge: true
+        };
       }
+      await executeLlmProcessing(captureResult.data, captureResult.scrapPath);
     }
 
     // 7. Skill Memory Gate Step (Durable Learning)
@@ -314,6 +222,23 @@ ${analysis.skill_note.has_candidate ? `### 💡 Suggested Scraper Improvement Ca
 
       if (fallbackResult.success && fallbackResult.scrapPath) {
         console.log('🎉 Fallback capture completed successfully!');
+        
+        if (fallbackResult.data && options.filter24Hours && isOlderThan24Hours(fallbackResult.data.dateText)) {
+          console.log(`[Pipeline] Fallback post is older than 24 hours (${fallbackResult.data.dateText}). Skipping LLM processing.`);
+          return {
+            engine: 'Playwright_Fallback',
+            success: true,
+            scrapPath: fallbackResult.scrapPath,
+            score: 0.7,
+            skippedAge: true
+          };
+        }
+
+        if (fallbackResult.data) {
+          console.log('[Pipeline] Running DeepSeek Brain Engine processing for Fallback capture...');
+          await executeLlmProcessing(fallbackResult.data, fallbackResult.scrapPath);
+        }
+
         return {
           engine: 'Playwright_Fallback',
           success: true,
@@ -329,6 +254,119 @@ ${analysis.skill_note.has_candidate ? `### 💡 Suggested Scraper Improvement Ca
       success: false,
       error: err.message
     };
+  }
+}
+
+/**
+ * Reusable helper to execute DeepSeek Brain Engine analysis and export to Obsidian vault.
+ */
+async function executeLlmProcessing(data: any, scrapPath: string) {
+  const llmProcessor = new LlmProcessor();
+  if (!llmProcessor.isConfigured()) {
+    console.log('\n🧠 [Pipeline] DeepSeek Brain Engine is skipped (DEEPSEEK_API_KEY is not set).');
+    return;
+  }
+
+  try {
+    const commentsList = data.comments ? data.comments.map((c: any) => `${c.author}: ${c.text}`) : [];
+    const llmResult = await llmProcessor.analyzePost(
+      data.author,
+      data.body,
+      data.url,
+      commentsList
+    );
+
+    if (llmResult) {
+      const { analysis, reasoning } = llmResult;
+      
+      // Save analysis.json
+      fs.writeFileSync(
+        path.join(scrapPath, 'analysis.json'),
+        JSON.stringify(analysis, null, 2),
+        'utf8'
+      );
+      
+      // Save reasoning_trace.txt
+      fs.writeFileSync(
+        path.join(scrapPath, 'reasoning_trace.txt'),
+        reasoning,
+        'utf8'
+      );
+      
+      console.log(`[Pipeline] Saved analysis.json and reasoning_trace.txt to: ${scrapPath}`);
+      
+      // Prepend LLM analysis frontmatter block to post.md
+      const postMdPath = path.join(scrapPath, 'post.md');
+      if (fs.existsSync(postMdPath)) {
+        const originalContent = fs.readFileSync(postMdPath, 'utf8');
+        
+        const nerSection = `
+- **People**: ${analysis.ner.people.length > 0 ? analysis.ner.people.map(p => `\`${p}\``).join(', ') : 'None'}
+- **Organizations**: ${analysis.ner.organizations.length > 0 ? analysis.ner.organizations.map(o => `\`${o}\``).join(', ') : 'None'}
+- **Products / Repos**: ${analysis.ner.products_or_repos.length > 0 ? analysis.ner.products_or_repos.map(r => `\`${r}\``).join(', ') : 'None'}
+- **Key Concepts**: ${analysis.ner.key_concepts.length > 0 ? analysis.ner.key_concepts.map(c => `\`${c}\``).join(', ') : 'None'}`;
+
+        const frontmatter = `---
+# 🧠 BatiFlow LLM Brain Engine Analysis
+> **DeepSeek Reasoning Trace**: [View reasoning_trace.txt](./reasoning_trace.txt)
+
+## 핵심 요약 (Executive Summary)
+${analysis.summary}
+
+## Semantic Tags
+${analysis.tags.map(t => `\`#${t}\``).join('  ')}
+
+## Named Entities (NER)
+${nerSection}
+
+## Scraping & Cleanup Audit
+- **LLM Context Audit Score**: \`${analysis.extraction_audit.score} / 1.0\`
+- **Cleanliness Rating**: ${analysis.extraction_audit.score >= 0.9 ? '✨ Pristine' : '⚠️ Minor UI remnants/mismatch'}
+- **Scraper Quality Feedback**: ${analysis.extraction_audit.issues_found.length > 0 ? analysis.extraction_audit.issues_found.join('; ') : 'No anomalies detected by LLM.'}
+
+${analysis.skill_note.has_candidate ? `### 💡 Suggested Scraper Improvement Candidate\n> ${analysis.skill_note.candidate_explanation}\n` : ''}---
+
+`;
+        fs.writeFileSync(postMdPath, frontmatter + originalContent, 'utf8');
+        console.log('[Pipeline] Beautiful LLM analysis successfully prepended to post.md!');
+
+        // Also copy to Obsidian Vault Social directory chronologically!
+        try {
+          const todayStr = new Date().toISOString().split('T')[0]; // "2026-05-23"
+          const vaultBaseDir = process.env.OBSIDIAN_VAULT_PATH || path.join(__dirname, '../../vault');
+          const vaultSocialDir = path.join(vaultBaseDir, 'Social', todayStr);
+          if (!fs.existsSync(vaultSocialDir)) {
+            fs.mkdirSync(vaultSocialDir, { recursive: true });
+          }
+          
+          // Clean author name for filename
+          const cleanAuthor = data.author.replace(/[/\\?%*:|"<>]/g, '').trim() || 'Unknown';
+          // Extract a 35-character sanitized snippet of the body for a friendly note title
+          const bodyCleanedForTitle = data.body
+            .replace(/[\r\n#*`_[\]()]/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+          const bodySnippet = bodyCleanedForTitle.substring(0, 35).trim() || 'Captured Post';
+          
+          const noteFilename = `${cleanAuthor} - ${bodySnippet}.md`;
+          const notePath = path.join(vaultSocialDir, noteFilename);
+          
+          // Save directly to Obsidian vault Social directory
+          fs.writeFileSync(notePath, frontmatter + originalContent, 'utf8');
+          console.log(`[Pipeline] Automatically saved Obsidian Vault note: ${noteFilename}`);
+          
+          // Copy the reasoning trace to the vault Social directory with a matching name for referencing
+          const traceFilename = `${cleanAuthor} - ${bodySnippet} - reasoning_trace.txt`;
+          const tracePath = path.join(vaultSocialDir, traceFilename);
+          fs.writeFileSync(tracePath, reasoning, 'utf8');
+          console.log(`[Pipeline] Saved Obsidian Vault reasoning trace: ${traceFilename}`);
+        } catch (vaultErr: any) {
+          console.error(`⚠️ [Pipeline] Failed to export to Obsidian Vault: ${vaultErr.message}`);
+        }
+      }
+    }
+  } catch (llmErr: any) {
+    console.error(`⚠️ [Pipeline] DeepSeek post-processing encountered an error: ${llmErr.message}`);
   }
 }
 

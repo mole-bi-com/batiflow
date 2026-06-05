@@ -10,12 +10,15 @@
     "auth:x": "ts-node packages/capture/cdp/auth-x.ts",
     "auth:threads": "ts-node packages/capture/cdp/auth-threads.ts",
     "auth:instagram": "ts-node packages/capture/cdp/auth-instagram.ts",
+    "auth:youtube": "ts-node packages/capture/cdp/auth-youtube.ts",
+    "ingest:youtube": "ts-node packages/capture/youtube/ingest-single-youtube.ts",
     "worker:sync": "ts-node packages/capture/worker/IngestWorker.ts --sync",
     "worker:register": "ts-node packages/capture/worker/IngestWorker.ts --register-plist",
     "test:cdp": "ts-node packages/capture/tests/test-cdp.ts",
     "test:linkedin:recon": "ts-node packages/capture/tests/test-linkedin-recon.ts",
     "test:linkedin:capture": "ts-node packages/capture/tests/test-linkedin-capture.ts",
-    "test:x:capture": "ts-node packages/capture/tests/test-linkedin-capture.ts"
+    "test:x:capture": "ts-node packages/capture/tests/test-linkedin-capture.ts",
+    "bot": "ts-node packages/capture/telegram/TelegramBot.ts"
   },
   "keywords": [
     "cdp",
@@ -29,11 +32,14 @@
   "dependencies": {
     "chrome-remote-interface": "^0.33.0",
     "dotenv": "^17.4.2",
-    "ws": "^8.16.0"
+    "node-telegram-bot-api": "^0.67.0",
+    "ws": "^8.16.0",
+    "youtube-transcript": "^1.3.1"
   },
   "devDependencies": {
     "@types/dotenv": "^6.1.1",
     "@types/node": "^20.11.24",
+    "@types/node-telegram-bot-api": "^0.64.14",
     "@types/ws": "^8.5.10",
     "playwright": "^1.42.1",
     "ts-node": "^10.9.2",

@@ -1,6 +1,7 @@
 import { execSync } from 'child_process';
 import crypto from 'crypto';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 export class ProfileManager {
@@ -11,7 +12,7 @@ export class ProfileManager {
 
   constructor(configDir?: string) {
     this.configDir = configDir || path.join(
-      process.env.HOME || '/Users/seungwoolee',
+      os.homedir(),
       'Library/Application Support/Google/Chrome/BatiFlowAgent/Config'
     );
     this.sessionEncPath = path.join(this.configDir, 'session.enc.json');

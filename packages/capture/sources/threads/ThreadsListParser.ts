@@ -34,7 +34,9 @@ export class ThreadsListParser {
           })
           .map(href => {
             try {
-              const urlObj = new URL(href);
+              const match = href.match(/https?:\\/\\/(?:www\\.)?threads\\.(?:net|com)\\/@[^\\/]+\\/post\\/[a-zA-Z0-9_-]+/);
+              const canonical = match ? match[0] : href;
+              const urlObj = new URL(canonical);
               return urlObj.origin + urlObj.pathname;
             } catch (e) {
               return href;

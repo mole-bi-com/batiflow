@@ -62,9 +62,14 @@ export class ThreadsCapture {
 
           // Resolve main post card elements (usually the first text card / main article)
           let author = 'Unknown Author';
-          const authorEl = document.querySelector('h2, span[class*="author"], a[href*="/@"] span');
-          if (authorEl) {
-            author = authorEl.textContent.trim();
+          const urlMatch = window.location.href.match(/\\/@([a-zA-Z0-9_.-]+)/);
+          if (urlMatch && urlMatch[1]) {
+            author = urlMatch[1];
+          } else {
+            const authorEl = document.querySelector('a[href*="/@"] span, span[class*="author"]');
+            if (authorEl) {
+              author = authorEl.textContent.trim();
+            }
           }
 
           // Resolve timestamp
@@ -74,12 +79,53 @@ export class ThreadsCapture {
             dateText = timeEl.getAttribute('datetime') || timeEl.textContent.trim();
           }
 
-          // Resolve body
-          let body = 'No content';
-          const bodyEl = document.querySelector('div[class*="body"], span[class*="text"], p');
-          if (bodyEl) {
-            body = bodyEl.innerText.trim();
+          // Resolve body using DOM-position layout analysis (Header -> Content -> Actions)
+          let body = '';
+          
+          // 1. Locate the first reaction row button (Like/Reply/Repost)
+          const buttons = Array.from(document.querySelectorAll('div[role="button"], button'));
+          let firstReactionRow = null;
+          for (const btn of buttons) {
+            const text = btn.textContent ? btn.textContent.trim().toLowerCase() : '';
+            if (text.startsWith('like') || text.startsWith('unlike') || text.startsWith('reply') || text.startsWith('repost')) {
+              firstReactionRow = btn;
+              break;
+            }
           }
+          
+          // 2. Collect leaf elements before the first reaction row
+          const allElements = Array.from(document.querySelectorAll('span, div, p'));
+          const candidates = [];
+          
+          for (const el of allElements) {
+            if (firstReactionRow && (firstReactionRow === el || firstReactionRow.contains(el) || (el.compareDocumentPosition(firstReactionRow) & Node.DOCUMENT_POSITION_FOLLOWING) === 0)) {
+              break;
+            }
+            
+            if (el.children.length > 1) continue; // skip containers
+            const text = el.textContent ? el.textContent.trim() : '';
+            if (text && text.length > 0 && text.length < 1500) {
+              const lower = text.toLowerCase();
+              if (lower === author.toLowerCase() || 
+                  lower === 'more' || 
+                  lower === 'follow' ||
+                  lower.includes('for you') || 
+                  lower.includes('search') || 
+                  lower.includes('profile')) {
+                continue;
+              }
+              candidates.push(text);
+            }
+          }
+          
+          // 3. Find the longest text candidate (the actual post body content)
+          let bestText = '';
+          for (const cand of candidates) {
+            if (cand.length > bestText.length) {
+              bestText = cand;
+            }
+          }
+          body = bestText || 'No content';
 
           // Resolve images
           const images = [];

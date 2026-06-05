@@ -11,6 +11,16 @@ import { XListParser } from '../sources/x/XListParser';
 import { LinkedInListParser } from '../sources/linkedin/LinkedInListParser';
 import { ThreadsListParser } from '../sources/threads/ThreadsListParser';
 import { InstagramListParser } from '../sources/instagram/InstagramListParser';
+import { YoutubePlaylistParser, YoutubePlaylistItem } from '../youtube/YoutubePlaylistParser';
+import { isOlderThan24Hours } from '../utils/date';
+import * as dotenv from 'dotenv';
+
+// Load environment variables
+const projectRoot = path.resolve(__dirname, '../../..');
+const envPath = path.join(projectRoot, '.env');
+if (fs.existsSync(envPath)) {
+  dotenv.config({ path: envPath });
+}
 
 interface RegistrySchema {
   lastSyncTimestamp: string;
@@ -22,14 +32,29 @@ export class IngestWorker {
   private profileManager: ProfileManager;
 
   constructor() {
-    this.registryPath = path.join(__dirname, 'ingest-registry.json');
+    const vaultPath = process.env.OBSIDIAN_VAULT_PATH;
+    if (vaultPath && fs.existsSync(vaultPath)) {
+      this.registryPath = path.join(vaultPath, '.batiflow-registry.json');
+      // Proactively migrate existing local registry if it exists and vault registry doesn't
+      const localRegistryPath = path.join(__dirname, 'ingest-registry.json');
+      if (fs.existsSync(localRegistryPath) && !fs.existsSync(this.registryPath)) {
+        try {
+          fs.copyFileSync(localRegistryPath, this.registryPath);
+          console.log(`[IngestWorker] Migrated local registry to Obsidian Vault: ${this.registryPath}`);
+        } catch (e: any) {
+          console.warn(`[IngestWorker] Failed to migrate registry: ${e.message}`);
+        }
+      }
+    } else {
+      this.registryPath = path.join(__dirname, 'ingest-registry.json');
+    }
     this.profileManager = new ProfileManager();
   }
 
   /**
    * Loads the duplication registry JSON.
    */
-  private loadRegistry(): RegistrySchema {
+  public loadRegistry(): RegistrySchema {
     if (fs.existsSync(this.registryPath)) {
       try {
         return JSON.parse(fs.readFileSync(this.registryPath, 'utf8'));
@@ -46,7 +71,7 @@ export class IngestWorker {
   /**
    * Saves the duplication registry JSON.
    */
-  private saveRegistry(registry: RegistrySchema): void {
+  public saveRegistry(registry: RegistrySchema): void {
     registry.lastSyncTimestamp = new Date().toISOString();
     fs.writeFileSync(this.registryPath, JSON.stringify(registry, null, 2), 'utf8');
     console.log(`[IngestWorker] Saved state registry to ${this.registryPath}`);
@@ -57,7 +82,7 @@ export class IngestWorker {
    */
   private notifyMacUser(message: string): void {
     try {
-      const appleScript = `display notification "${message}" with title "BatiFlow Intel Engine" sound name "Glass"`;
+      const appleScript = `display notification "${message}" with title "BatiFlow Brain Engine" sound name "Glass"`;
       execSync(`osascript -e '${appleScript}'`);
     } catch (e) {
       console.warn('[IngestWorker] Native macOS notification failed to trigger.');
@@ -127,22 +152,37 @@ export class IngestWorker {
       this.notifyMacUser('BatiFlow Daily Sync Daemon registered successfully!');
     } catch (err: any) {
       console.error(`❌ Failed to load LaunchAgent via launchctl: ${err.message}`);
+      throw err;
     }
   }
 
   /**
    * Orchestrates the multi-platform synchronization loop.
    */
-  public async syncAll(): Promise<void> {
+  public async syncAll(): Promise<{
+    successCount: number;
+    totalCount: number;
+    capturedItems: Array<{
+      url: string;
+      platform: string;
+      author: string;
+      summary: string;
+      tags: string[];
+      scrapPath: string;
+      score: number;
+    }>;
+    reportPath?: string;
+  }> {
     console.log('\n🔄 [IngestWorker] Initializing Automated Multi-Platform Sync...');
     const registry = this.loadRegistry();
     const newUrls: string[] = [];
+    const ytVideos: YoutubePlaylistItem[] = [];
 
     // 1. Process X/Twitter
     const xSession = this.profileManager.loadAndDecryptSession('x');
     if (xSession && xSession.length > 0) {
       console.log('\n[IngestWorker] Scanning X (Twitter) Likes...');
-      const xLauncher = new ChromeLauncher({ headless: true });
+      const xLauncher = new ChromeLauncher({ headless: false });
       const xPool = new TabPool();
       try {
         await xLauncher.launch();
@@ -279,7 +319,58 @@ export class IngestWorker {
       }
     }
 
+    // 4.5. Process YouTube Watch Later
+    const youtubeSession = this.profileManager.loadAndDecryptSession('youtube');
+    if (youtubeSession && youtubeSession.length > 0) {
+      console.log('\n[IngestWorker] Scanning YouTube Watch Later Playlist...');
+      const ytLauncher = new ChromeLauncher({ headless: false });
+      const ytPool = new TabPool();
+      try {
+        await ytLauncher.launch();
+        const client = await ytPool.acquireTab();
+        const rawClient = client.getRawClient();
+        const { Network } = rawClient;
+        await Network.clearBrowserCookies();
+        await Network.setCookies({ cookies: youtubeSession });
+
+        const ytParser = new YoutubePlaylistParser(client);
+        const parsedVideos = await ytParser.parseList();
+        ytVideos.push(...parsedVideos);
+        
+        const hasYoutubeProcessed = Object.keys(registry.processedUrls).some(url => url.includes('youtube.com') || url.includes('youtu.be'));
+        
+        if (!hasYoutubeProcessed && parsedVideos.length > 0) {
+          console.log(`[IngestWorker] Initial run detected for YouTube. Marking ${parsedVideos.length} existing playlist videos as processed in registry to skip historic content...`);
+          for (const video of parsedVideos) {
+            registry.processedUrls[video.url] = new Date().toISOString();
+          }
+        } else {
+          for (const video of parsedVideos) {
+            const url = video.url;
+            if (!registry.processedUrls[url] && !newUrls.includes(url)) {
+              if (isOlderThan24Hours(video.addedText)) {
+                console.log(`[IngestWorker] Skipping YouTube video because it was added more than 24 hours ago: "${video.title}" (${video.addedText})`);
+                // Mark it as processed in registry so we don't scan it again next time
+                registry.processedUrls[url] = new Date().toISOString();
+                continue;
+              }
+              console.log(`[IngestWorker] Found new YouTube Watch Later video to sync: "${video.title}"`);
+              newUrls.push(url);
+            }
+          }
+        }
+
+        await ytPool.releaseTab(client);
+        ytLauncher.kill();
+      } catch (e: any) {
+        console.error(`⚠️ [IngestWorker] YouTube scanning failed: ${e.message}`);
+        ytLauncher.kill();
+      }
+    }
+
     // 5. Ingest and Capture New Posts sequentially
+    console.log('\n⏳ Cooldown delay (3.5s) to allow previous Chrome sessions to fully terminate...');
+    await new Promise(resolve => setTimeout(resolve, 3500));
     console.log(`\n📬 [IngestWorker] Found ${newUrls.length} new bookmark URLs to ingest.`);
 
     // ✅ 신규 항목이 없으면 리포트 생성 없이 바로 종료
@@ -287,7 +378,11 @@ export class IngestWorker {
       this.saveRegistry(registry);
       console.log('✅ [IngestWorker] 모든 플랫폼이 최신 상태입니다. 새 인사이트가 없습니다.');
       this.notifyMacUser('BatiFlow 동기화 완료: 새로운 인사이트가 없습니다 ✨');
-      return;
+      return {
+        successCount: 0,
+        totalCount: 0,
+        capturedItems: []
+      };
     }
     
     const capturedItems: Array<{
@@ -306,13 +401,59 @@ export class IngestWorker {
       console.log(`\n📥 [IngestWorker] Ingesting (${i + 1}/${newUrls.length}): ${url}`);
       
       try {
-        const result = await runBatiFlowCapture({ url, useFallback: true });
+        let result: any;
+        if (url.includes('youtube.com') || url.includes('youtu.be')) {
+          console.log(`[IngestWorker] YouTube URL detected. Invoking YouTube Ingest Engine...`);
+          const projectDir = path.resolve(__dirname, '../../..');
+          const scriptPath = path.join(projectDir, 'packages/capture/youtube/ingest-single-youtube.ts');
+          const command = `npx ts-node "${scriptPath}" --url "${url}"`;
+          
+          try {
+            console.log(`[IngestWorker] Running command: ${command}`);
+            const stdout = execSync(command, { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 });
+            
+            const urlObj = new URL(url);
+            const videoId = urlObj.searchParams.get('v') || url.split('/').pop()?.split('?')[0];
+            const scrapPath = path.join(projectDir, 'scrap/youtube', videoId || '');
+            
+            let summary = '';
+            const summaryMatch = stdout.match(/---SUMMARY_START---([\s\S]*?)---SUMMARY_END---/);
+            if (summaryMatch && summaryMatch[1]) {
+              summary = summaryMatch[1].trim();
+            } else {
+              summary = 'YouTube video successfully analyzed. See Obsidian note for details.';
+            }
+
+            result = {
+              success: true,
+              scrapPath,
+              score: 1.0,
+              summary
+            };
+          } catch (err: any) {
+            console.error(`[IngestWorker] YouTube ingest process failed: ${err.message}`);
+            result = { success: false };
+          }
+        } else {
+          result = await runBatiFlowCapture({ url, useFallback: true, filter24Hours: true });
+        }
+
         if (result && result.success && result.scrapPath) {
+          if (result.skippedAge) {
+            console.log(`[IngestWorker] Skipping post registration/processing because it is older than 24 hours.`);
+            registry.processedUrls[url] = new Date().toISOString();
+            try {
+              fs.rmSync(result.scrapPath, { recursive: true, force: true });
+            } catch (rmErr) {
+              console.warn(`[IngestWorker] Failed to delete skipped scrap directory: ${result.scrapPath}`);
+            }
+            continue;
+          }
           registry.processedUrls[url] = new Date().toISOString();
           successCount++;
 
           // Extract analysis info
-          let summary = '';
+          let summary = result.summary || '';
           let tags: string[] = [];
           let author = 'Unknown';
           try {
@@ -320,7 +461,7 @@ export class IngestWorker {
             const extractionPath = path.join(result.scrapPath, 'extraction.json');
             if (fs.existsSync(analysisPath)) {
               const analysis = JSON.parse(fs.readFileSync(analysisPath, 'utf8'));
-              summary = analysis.summary || '';
+              if (!summary) summary = analysis.summary || '';
               tags = analysis.tags || [];
             }
             if (fs.existsSync(extractionPath)) {
@@ -331,9 +472,17 @@ export class IngestWorker {
             console.warn('[IngestWorker] Failed to parse analysis details:', err);
           }
 
+          if (url.includes('youtube.com') || url.includes('youtu.be')) {
+            const matchedVideo = ytVideos.find(v => v.url === url);
+            author = matchedVideo ? matchedVideo.channel : 'YouTube';
+            if (!summary) summary = 'YouTube video successfully analyzed.';
+            tags = ['youtube', 'video'];
+          }
+
           capturedItems.push({
             url,
-            platform: url.includes('x.com') || url.includes('twitter.com') ? 'X (Twitter)' :
+            platform: url.includes('youtube.com') || url.includes('youtu.be') ? 'YouTube' :
+                      url.includes('x.com') || url.includes('twitter.com') ? 'X (Twitter)' :
                       url.includes('threads.net') || url.includes('threads.com') ? 'Threads' :
                       url.includes('instagram.com') ? 'Instagram' : 'LinkedIn',
             author,
@@ -351,23 +500,25 @@ export class IngestWorker {
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
 
-    // 5.5. Generate Obsidian Intel Summary Report
+    // 5.5. Generate Obsidian Intelligence Summary Report
     const timestampStr = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
     const now = new Date();
     const pad = (n: number) => n.toString().padStart(2, '0');
     const dateFileStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
     const timeFileStr = `${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
-    const reportFilename = `Intel Sync Report - ${dateFileStr}_${timeFileStr}.md`;
+    const reportFilename = `Intelligence Sync Report - ${dateFileStr}_${timeFileStr}.md`;
     
     const projectDir = path.resolve(__dirname, '../../..');
-    const vaultInboxDir = path.join(projectDir, 'vault/Inbox');
-    if (!fs.existsSync(vaultInboxDir)) {
-      fs.mkdirSync(vaultInboxDir, { recursive: true });
+    const todayStr = new Date().toISOString().split('T')[0]; // "2026-05-23"
+    const vaultBaseDir = process.env.OBSIDIAN_VAULT_PATH || path.join(projectDir, 'vault');
+    const vaultReportsDir = path.join(vaultBaseDir, 'Reports', todayStr);
+    if (!fs.existsSync(vaultReportsDir)) {
+      fs.mkdirSync(vaultReportsDir, { recursive: true });
     }
-    const reportPath = path.join(vaultInboxDir, reportFilename);
+    const reportPath = path.join(vaultReportsDir, reportFilename);
 
     let reportMarkdown = `---
-# 🧠 BatiFlow Intel Engine Sync Report
+# 🧠 BatiFlow Brain Engine Sync Report
 > **Sync Timestamp**: \`${timestampStr}\`
 > **Sync Result**: Successfully imported \`${successCount} / ${newUrls.length}\` new insights
 
@@ -381,12 +532,13 @@ export class IngestWorker {
 - Threads: \`0 new items\`
 - LinkedIn: \`0 new items\`
 - Instagram: \`0 new items\`
+- YouTube: \`0 new items\`
 
 > [!TIP]
 > **All platform feeds are completely up to date!** ✨ No new bookmarks or liked posts were found.
 `;
     } else {
-      const counts = { 'X (Twitter)': 0, 'Threads': 0, 'LinkedIn': 0, 'Instagram': 0 };
+      const counts = { 'X (Twitter)': 0, 'Threads': 0, 'LinkedIn': 0, 'Instagram': 0, 'YouTube': 0 };
       capturedItems.forEach(item => {
         const plat = item.platform as keyof typeof counts;
         if (counts[plat] !== undefined) counts[plat]++;
@@ -397,6 +549,7 @@ export class IngestWorker {
 - **Threads**: \`${counts['Threads']} new items\`
 - **LinkedIn**: \`${counts['LinkedIn']} new items\`
 - **Instagram**: \`${counts['Instagram']} new items\`
+- **YouTube**: \`${counts['YouTube']} new items\`
 
 ---
 
@@ -419,10 +572,10 @@ export class IngestWorker {
       });
     }
 
-    reportMarkdown += `\n\n*Generated by BatiFlow Intel Engine v1.0 Background Sync*\n`;
+    reportMarkdown += `\n\n*Generated by BatiFlow Brain Engine v1.0 Background Sync*\n`;
 
     fs.writeFileSync(reportPath, reportMarkdown, 'utf8');
-    console.log(`[IngestWorker] Daily Intel Summary report successfully generated at: ${reportPath}`);
+    console.log(`[IngestWorker] Daily Intelligence Summary report successfully generated at: ${reportPath}`);
 
     // 6. Finalize state
     this.saveRegistry(registry);
@@ -437,6 +590,13 @@ export class IngestWorker {
     } catch (obsErr: any) {
       console.warn('[IngestWorker] Failed to open report in Obsidian automatically:', obsErr.message);
     }
+
+    return {
+      successCount,
+      totalCount: newUrls.length,
+      capturedItems,
+      reportPath
+    };
   }
 }
 
@@ -449,9 +609,37 @@ if (require.main === module) {
     worker.registerLaunchAgent();
   } else if (args.includes('--sync')) {
     worker.syncAll().catch(console.error);
+  } else if (args.includes('--url')) {
+    const urlIndex = args.indexOf('--url');
+    const url = args[urlIndex + 1];
+    if (!url) {
+      console.error('❌ Missing URL parameter after --url');
+      process.exit(1);
+    }
+    
+    console.log(`[IngestWorker] Triggering single URL capture for: ${url}`);
+    
+    (async () => {
+      try {
+        const result = await runBatiFlowCapture({ url, useFallback: true });
+        if (result && result.success && result.scrapPath) {
+          const registry = worker.loadRegistry();
+          registry.processedUrls[url] = new Date().toISOString();
+          worker.saveRegistry(registry);
+          console.log(`🎉 Success: Ingested single URL and registered to database.`);
+        } else {
+          console.error(`❌ Capture failed for: ${url}`);
+          process.exit(1);
+        }
+      } catch (err: any) {
+        console.error(`❌ Error capturing single URL: ${err.message}`);
+        process.exit(1);
+      }
+    })();
   } else {
     console.log('BatiFlow Ingest Worker CLI options:');
     console.log('  --sync            Triggers immediate list synchronization');
     console.log('  --register-plist  Generates and registers com.batiflow.ingest.plist LaunchAgent');
+    console.log('  --url <URL>       Ingests a single specific social post URL and saves it to the registry');
   }
 }

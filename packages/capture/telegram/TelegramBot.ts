@@ -1,0 +1,231 @@
+import * as fs from 'fs';
+import * as path from 'path';
+import * as dotenv from 'dotenv';
+import TelegramBot from 'node-telegram-bot-api';
+import { YoutubeExtractor } from '../youtube/YoutubeExtractor';
+import { LlmProcessor } from '../llm/LlmProcessor';
+
+// Load environment variables
+const projectRoot = path.resolve(__dirname, '../../../');
+const envPath = path.join(projectRoot, '.env');
+if (fs.existsSync(envPath)) {
+  dotenv.config({ path: envPath });
+} else {
+  dotenv.config();
+}
+
+const token = process.env.TELEGRAM_BOT_TOKEN || '';
+
+if (!token) {
+  console.error('\n❌ [TelegramBot] TELEGRAM_BOT_TOKEN is missing in your .env file!');
+  console.error(`👉 Please update ${envPath} with your Telegram Bot Token.`);
+  process.exit(1);
+}
+
+// Initialize the Telegram Bot in Long Polling mode
+console.log('🤖 [TelegramBot] Initializing SwooshMaltBot listener...');
+const bot = new TelegramBot(token, { polling: true });
+
+const extractor = new YoutubeExtractor();
+const llmProcessor = new LlmProcessor();
+
+/**
+ * Sanitizes strings so they can be safely used as macOS/Windows filenames.
+ */
+function sanitizeFilename(name: string): string {
+  return name.replace(/[/\\?%*:|"<>]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+// 1. Help & Start command
+bot.onText(/\/start/, (msg) => {
+  const chatId = msg.chat.id;
+  const username = msg.chat.username || msg.chat.first_name || 'User';
+  
+  const welcomeText = `안녕하세요, ${username}님! 🧠✨
+**BatiFlow YouTube Intelligence Brain Engine** (@SwooshMaltBot) 입니다.
+
+이곳으로 유튜브 영상 링크를 보내주시면, 다음 작업을 자동으로 처리해 드립니다:
+1. ⏳ **자막(스크립트) 자동 추출** (한국어 우선 추출 및 시간대 매핑)
+2. 🧠 **DeepSeek v4 Pro Brain Engine 분석** (가치사슬, 인과 모델, 교차 도메인 연결 등 심층 재정렬)
+3. 📂 **로컬 Obsidian Vault 동적 저장** (\`vault/Inbox/\` 아래 마크다운 노트와 추론 트레이스 자동 적재)
+4. 📥 **텔레그램 결과물 피드백** (핵심 요약 텍스트 전송 및 전체 마크다운 파일 첨부)
+
+지금 바로 요약하고 싶은 유튜브 링크를 보내보세요! 🚀`;
+
+  bot.sendMessage(chatId, welcomeText, { parse_mode: 'Markdown' });
+});
+
+// 2. Main message handler
+bot.on('message', async (msg) => {
+  const chatId = msg.chat.id;
+  const text = msg.text || '';
+
+  // Skip slash commands
+  if (text.startsWith('/')) return;
+
+  // Extract YouTube Video ID
+  const videoId = YoutubeExtractor.extractVideoId(text);
+  if (!videoId) {
+    // If it's a URL but not a YouTube URL
+    if (text.startsWith('http://') || text.startsWith('https://')) {
+      bot.sendMessage(chatId, '⚠️ 보낸 링크가 올바른 유튜브 영상 링크가 아닙니다. 다시 확인해 주세요.');
+    }
+    return;
+  }
+
+  const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+  console.log(`\n📬 [TelegramBot] Received YouTube URL: ${videoUrl} from chat ID: ${chatId}`);
+
+  // Send initial loading feedback
+  const statusMsg = await bot.sendMessage(chatId, '⏳ 유튜브 영상 정보를 읽어오고 자막을 추출하는 중입니다...');
+
+  try {
+    // A. Fetch metadata & Transcript
+    const metadata = await extractor.fetchMetadata(videoId);
+    
+    // Update status to user
+    await bot.editMessageText(
+      `✅ 자막을 다운로드했습니다! (제목: "${metadata.title}")\n🧠 DeepSeek Brain Engine을 기동하여 심층 분석을 진행하고 있습니다... (Thinking Mode 활성화)`,
+      { chat_id: chatId, message_id: statusMsg.message_id }
+    );
+
+    const transcript = await extractor.fetchTranscript(videoId);
+
+    // B. Analyze with DeepSeek v4 Pro using the exact custom prompt
+    const llmResult = await llmProcessor.analyzeYoutubeTranscript(
+      metadata.title,
+      metadata.channel,
+      videoUrl,
+      transcript
+    );
+
+    if (!llmResult) {
+      throw new Error('DeepSeek Brain Engine did not return any analysis results. Check .env API configuration.');
+    }
+
+    const { analysis, reasoning } = llmResult;
+
+    // C. Save to Vault & Scrap folder
+    console.log('[TelegramBot] Saving analysis outputs to disk...');
+    
+    const cleanChannel = sanitizeFilename(metadata.channel);
+    const cleanTitle = sanitizeFilename(metadata.title);
+    
+    const markdownFilename = `[YouTube] ${cleanChannel} - ${cleanTitle}.md`;
+    const traceFilename = `[YouTube] ${cleanChannel} - ${cleanTitle} - reasoning_trace.txt`;
+
+    // 1. Save to Obsidian Vault YouTube Chronological Folder
+    const todayStr = new Date().toISOString().split('T')[0]; // e.g. "2026-05-23"
+    const vaultBaseDir = process.env.OBSIDIAN_VAULT_PATH || path.join(projectRoot, 'vault');
+    const vaultYoutubeDir = path.join(vaultBaseDir, 'YouTube', todayStr);
+    if (!fs.existsSync(vaultYoutubeDir)) {
+      fs.mkdirSync(vaultYoutubeDir, { recursive: true });
+    }
+
+    const vaultMarkdownPath = path.join(vaultYoutubeDir, markdownFilename);
+    const vaultTracePath = path.join(vaultYoutubeDir, traceFilename);
+
+    // Add metadata block to Markdown
+    const formattedMarkdown = `---
+# 🧠 BatiFlow YouTube Deep Analysis
+- **Video Title**: ${metadata.title}
+- **Channel**: ${metadata.channel}
+- **Original URL**: ${videoUrl}
+- **Analysis Date**: ${new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })}
+- **DeepSeek Reasoning Trace**: [View reasoning_trace.txt](./${encodeURIComponent(traceFilename)})
+---
+
+${analysis}
+
+---
+*Generated by BatiFlow YouTube Brain Engine v1.0*
+`;
+
+    fs.writeFileSync(vaultMarkdownPath, formattedMarkdown, 'utf8');
+    fs.writeFileSync(vaultTracePath, reasoning, 'utf8');
+    console.log(`[TelegramBot] Saved to Obsidian Vault: ${vaultMarkdownPath}`);
+
+    // 2. Save a backup to scrap folder
+    const scrapYoutubeDir = path.join(projectRoot, `scrap/youtube/${videoId}`);
+    if (!fs.existsSync(scrapYoutubeDir)) {
+      fs.mkdirSync(scrapYoutubeDir, { recursive: true });
+    }
+    fs.writeFileSync(path.join(scrapYoutubeDir, 'analysis.md'), formattedMarkdown, 'utf8');
+    fs.writeFileSync(path.join(scrapYoutubeDir, 'reasoning_trace.txt'), reasoning, 'utf8');
+    fs.writeFileSync(path.join(scrapYoutubeDir, 'transcript.txt'), transcript, 'utf8');
+    console.log(`[TelegramBot] Saved backup to scrap folder: ${scrapYoutubeDir}`);
+
+    // D. Build concise Telegram response text (Fit under 4096 character limit)
+    // Extract first two sections (Core Thesis & Mechanism) or first 2000 chars as a summary
+    let summaryText = '';
+    
+    // Try to extract the first part of the Markdown for quick preview
+    const sections = analysis.split('####');
+    if (sections.length > 2) {
+      // Typically 1. 핵심 명제 (Core Thesis) and 3. 메커니즘 (Mechanism) will be captured
+      summaryText += `### 🧠 *핵심 명제 (Core Thesis)*\n`;
+      const coreThesisSection = sections.find(s => s.trim().startsWith('1. 핵심 명제') || s.trim().startsWith('1.핵심 명제'));
+      if (coreThesisSection) {
+        summaryText += coreThesisSection.replace(/^(1\.\s*핵심\s*명제\s*\(Core\s*Thesis\))/i, '').trim();
+      } else {
+        // Fallback to first few lines of analysis
+        summaryText += analysis.substring(0, 500) + '...';
+      }
+
+      summaryText += `\n\n### ⚙️ *메커니즘 (Mechanism)*\n`;
+      const mechanismSection = sections.find(s => s.trim().startsWith('3. 메커니즘') || s.trim().startsWith('3.메커니즘'));
+      if (mechanismSection) {
+        summaryText += mechanismSection.replace(/^(3\.\s*메커니즘\s*\(Mechanism\))/i, '').trim();
+      } else {
+        summaryText += '_상세 분석은 첨부된 마크다운 파일을 확인해 주세요._';
+      }
+    } else {
+      summaryText = analysis.substring(0, 1500) + '\n\n... (이하 생략)';
+    }
+
+    const replyMarkdown = `🎉 **분석이 완료되었습니다!**
+
+**제목**: ${metadata.title}
+**채널**: ${metadata.channel}
+
+---
+
+${summaryText}
+
+---
+📂 **마크다운 리포트와 DeepSeek 추론 트레이스 파일이 로컬 Obsidian의 YouTube/${todayStr}/ 폴더에 자동 분류 저장되었습니다.**
+- 📄 파일 경로: \`vault/YouTube/${todayStr}/${markdownFilename}\`
+
+👇 아래 첨부파일로 전체 고밀도 마크다운 분석 리포트를 즉시 받아보실 수 있습니다.`;
+
+    // E. Remove loading status and send final results
+    await bot.deleteMessage(chatId, statusMsg.message_id);
+
+    // Send text summary
+    await bot.sendMessage(chatId, replyMarkdown, { parse_mode: 'Markdown' });
+
+    // Send complete markdown file as a document
+    await bot.sendDocument(
+      chatId, 
+      Buffer.from(formattedMarkdown, 'utf8'), 
+      {}, 
+      { filename: `${cleanTitle}.md`, contentType: 'text/markdown' }
+    );
+    console.log('[TelegramBot] Successfully replied on Telegram and attached markdown document.');
+
+  } catch (error: any) {
+    console.error(`❌ [TelegramBot] Pipeline failed for URL ${videoUrl}: ${error.message}`);
+    
+    // Update status/error message
+    try {
+      await bot.editMessageText(
+        `❌ **분석 중 오류가 발생했습니다!**\n\n이유: ${error.message}\n\n영상의 자막 기능이 활성화되어 있는지 확인해 주세요.`,
+        { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' }
+      );
+    } catch (editErr) {
+      bot.sendMessage(chatId, `❌ **분석 중 오류가 발생했습니다!**\n\n이유: ${error.message}`);
+    }
+  }
+});
+
+console.log('✅ [TelegramBot] SwooshMaltBot listener is ONLINE and waiting for YouTube links! 🚀');

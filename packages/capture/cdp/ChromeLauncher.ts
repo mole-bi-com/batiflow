@@ -1,6 +1,7 @@
 import { spawn, ChildProcess } from 'child_process';
 import http from 'http';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 export interface LauncherOptions {
@@ -23,7 +24,7 @@ export class ChromeLauncher {
     
     // Resolve agent user-data-dir
     this.userDataDir = options.userDataDir || path.join(
-      process.env.HOME || '/Users/seungwoolee',
+      os.homedir(),
       'Library/Application Support/Google/Chrome/BatiFlowAgent'
     );
 
