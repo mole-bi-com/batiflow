@@ -20,6 +20,8 @@
     "test:linkedin:recon": "ts-node packages/capture/tests/test-linkedin-recon.ts",
     "test:linkedin:capture": "ts-node packages/capture/tests/test-linkedin-capture.ts",
     "test:x:capture": "ts-node packages/capture/tests/test-linkedin-capture.ts",
+    "test:instagram-list": "ts-node packages/capture/tests/test-instagram-list-parser.ts",
+    "test:registry": "ts-node packages/capture/tests/test-ingest-registry.ts",
     "test:telegram-links": "ts-node packages/capture/tests/test-telegram-link-router.ts && ts-node packages/capture/tests/test-web-page-ingestor.ts",
     "bot": "hermes gateway start",
     "bot:legacy": "ts-node packages/capture/telegram/TelegramBot.ts"

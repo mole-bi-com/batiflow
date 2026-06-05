@@ -27,39 +27,76 @@ interface RegistrySchema {
   processedUrls: Record<string, string>;
 }
 
+const REGISTRY_IO_RETRY_DELAYS_MS = [100, 250, 500, 1000, 2000];
+const registryRetryWaitBuffer = new Int32Array(new SharedArrayBuffer(4));
+
 export class IngestWorker {
   private registryPath: string;
   private profileManager: ProfileManager;
 
-  constructor() {
-    const vaultPath = process.env.OBSIDIAN_VAULT_PATH;
-    if (vaultPath && fs.existsSync(vaultPath)) {
-      this.registryPath = path.join(vaultPath, '.batiflow-registry.json');
-      // Proactively migrate existing local registry if it exists and vault registry doesn't
-      const localRegistryPath = path.join(__dirname, 'ingest-registry.json');
-      if (fs.existsSync(localRegistryPath) && !fs.existsSync(this.registryPath)) {
-        try {
-          fs.copyFileSync(localRegistryPath, this.registryPath);
-          console.log(`[IngestWorker] Migrated local registry to Obsidian Vault: ${this.registryPath}`);
-        } catch (e: any) {
-          console.warn(`[IngestWorker] Failed to migrate registry: ${e.message}`);
-        }
-      }
+  constructor(registryPath?: string) {
+    if (registryPath) {
+      this.registryPath = registryPath;
     } else {
-      this.registryPath = path.join(__dirname, 'ingest-registry.json');
+      const vaultPath = process.env.OBSIDIAN_VAULT_PATH;
+      if (vaultPath && fs.existsSync(vaultPath)) {
+        this.registryPath = path.join(vaultPath, '.batiflow-registry.json');
+        // Proactively migrate existing local registry if it exists and vault registry doesn't
+        const localRegistryPath = path.join(__dirname, 'ingest-registry.json');
+        if (fs.existsSync(localRegistryPath) && !fs.existsSync(this.registryPath)) {
+          try {
+            fs.copyFileSync(localRegistryPath, this.registryPath);
+            console.log(`[IngestWorker] Migrated local registry to Obsidian Vault: ${this.registryPath}`);
+          } catch (e: any) {
+            console.warn(`[IngestWorker] Failed to migrate registry: ${e.message}`);
+          }
+        }
+      } else {
+        this.registryPath = path.join(__dirname, 'ingest-registry.json');
+      }
     }
     this.profileManager = new ProfileManager();
+  }
+
+  private withRegistryRetry<T>(operation: 'read' | 'write', action: () => T): T {
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt <= REGISTRY_IO_RETRY_DELAYS_MS.length; attempt += 1) {
+      try {
+        return action();
+      } catch (error) {
+        lastError = error;
+        if (
+          (error as NodeJS.ErrnoException).code === 'ENOENT' ||
+          attempt === REGISTRY_IO_RETRY_DELAYS_MS.length
+        ) {
+          break;
+        }
+
+        const delayMs = REGISTRY_IO_RETRY_DELAYS_MS[attempt];
+        console.warn(
+          `[IngestWorker] Registry ${operation} failed; retrying in ${delayMs}ms ` +
+          `(attempt ${attempt + 1}/${REGISTRY_IO_RETRY_DELAYS_MS.length + 1}).`
+        );
+        Atomics.wait(registryRetryWaitBuffer, 0, 0, delayMs);
+      }
+    }
+
+    throw lastError;
   }
 
   /**
    * Loads the duplication registry JSON.
    */
   public loadRegistry(): RegistrySchema {
-    if (fs.existsSync(this.registryPath)) {
-      try {
-        return JSON.parse(fs.readFileSync(this.registryPath, 'utf8'));
-      } catch (e) {
-        console.error('[IngestWorker] Failed to parse registry, returning empty state.');
+    try {
+      const registryJson = this.withRegistryRetry('read', () =>
+        fs.readFileSync(this.registryPath, 'utf8')
+      );
+      return JSON.parse(registryJson);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw error;
       }
     }
     return {
@@ -73,7 +110,9 @@ export class IngestWorker {
    */
   public saveRegistry(registry: RegistrySchema): void {
     registry.lastSyncTimestamp = new Date().toISOString();
-    fs.writeFileSync(this.registryPath, JSON.stringify(registry, null, 2), 'utf8');
+    this.withRegistryRetry('write', () =>
+      fs.writeFileSync(this.registryPath, JSON.stringify(registry, null, 2), 'utf8')
+    );
     console.log(`[IngestWorker] Saved state registry to ${this.registryPath}`);
   }
 
@@ -104,7 +143,16 @@ export class IngestWorker {
       fs.mkdirSync(userLaunchAgentsDir, { recursive: true });
     }
 
-    const nodePath = execSync('which node', { encoding: 'utf8' }).trim() || '/usr/local/bin/node';
+    let nodePath = execSync('which node', { encoding: 'utf8' }).trim() || '/usr/local/bin/node';
+    try {
+      const node24Prefix = execSync('brew --prefix node@24', { encoding: 'utf8' }).trim();
+      const node24Path = path.join(node24Prefix, 'bin/node');
+      if (fs.existsSync(node24Path)) {
+        nodePath = node24Path;
+      }
+    } catch (e) {
+      console.warn('[IngestWorker] Homebrew Node 24 not found; using the active Node executable.');
+    }
     const tsNodePath = execSync('which ts-node', { encoding: 'utf8' }).trim() || path.join(projectDir, 'node_modules/.bin/ts-node');
 
     const plistContent = `<?xml version="1.0" encoding="UTF-8"?>
@@ -608,7 +656,10 @@ if (require.main === module) {
   if (args.includes('--register-plist')) {
     worker.registerLaunchAgent();
   } else if (args.includes('--sync')) {
-    worker.syncAll().catch(console.error);
+    worker.syncAll().catch((error) => {
+      console.error(error);
+      process.exitCode = 1;
+    });
   } else if (args.includes('--url')) {
     const urlIndex = args.indexOf('--url');
     const url = args[urlIndex + 1];

@@ -67,7 +67,8 @@ ensure_homebrew() {
 step "Installing required tools"
 ensure_homebrew
 command -v git >/dev/null 2>&1 || brew install git
-command -v node >/dev/null 2>&1 || brew install node
+brew list node@24 >/dev/null 2>&1 || brew install node@24
+export PATH="$(brew --prefix node@24)/bin:$PATH"
 command -v python3 >/dev/null 2>&1 || brew install python
 [[ -x "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ]] || brew install --cask google-chrome
 

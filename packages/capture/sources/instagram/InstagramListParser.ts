@@ -1,5 +1,18 @@
 import { CdpClient } from '../../cdp/CdpClient';
 
+export function normalizeInstagramPostUrl(rawUrl: string): string | null {
+  try {
+    const url = new URL(rawUrl);
+    const match = url.pathname.match(/^\/(?:saved\/)?(p|reel)\/([^/]+)/);
+    if (!match) {
+      return null;
+    }
+    return `${url.origin}/${match[1]}/${match[2]}/`;
+  } catch (e) {
+    return null;
+  }
+}
+
 export class InstagramListParser {
   private client: CdpClient;
 
@@ -47,7 +60,11 @@ export class InstagramListParser {
       })()
     `);
 
-    console.log(`[InstagramListParser] Extracted ${urls.length} unique post URLs from Instagram Saved.`);
-    return urls;
+    const normalizedUrls = Array.from(
+      new Set(urls.map(normalizeInstagramPostUrl).filter((url): url is string => Boolean(url)))
+    );
+
+    console.log(`[InstagramListParser] Extracted ${normalizedUrls.length} unique post URLs from Instagram Saved.`);
+    return normalizedUrls;
   }
 }
