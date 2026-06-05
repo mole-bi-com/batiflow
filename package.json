@@ -21,7 +21,8 @@
     "test:linkedin:capture": "ts-node packages/capture/tests/test-linkedin-capture.ts",
     "test:x:capture": "ts-node packages/capture/tests/test-linkedin-capture.ts",
     "test:telegram-links": "ts-node packages/capture/tests/test-telegram-link-router.ts && ts-node packages/capture/tests/test-web-page-ingestor.ts",
-    "bot": "ts-node packages/capture/telegram/TelegramBot.ts"
+    "bot": "hermes gateway start",
+    "bot:legacy": "ts-node packages/capture/telegram/TelegramBot.ts"
   },
   "keywords": [
     "cdp",
