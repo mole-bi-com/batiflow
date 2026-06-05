@@ -21,6 +21,9 @@ grep -q 'worker:register' "$SETUP_SCRIPT" || fail "daily sync LaunchAgent regist
 grep -q 'gateway start' "$SETUP_SCRIPT" || fail "Hermes Gateway startup is missing"
 grep -q 'upsert_env_value' "$SETUP_SCRIPT" || fail "Hermes env values are overwritten instead of merged"
 grep -q 'youtube-transcript-api' "$SETUP_SCRIPT" || fail "Python YouTube transcript dependency is missing"
+grep -q 'Downloads/batiflow-computer-b-secrets.txt' "$SETUP_SCRIPT" || fail "Downloads secret handoff file is not supported"
+grep -q 'SECRETS_FILE' "$SETUP_SCRIPT" || fail "secret handoff file path is not configurable"
+grep -q 'first_env_value DEEPSEEK_API_KEY "$ENV_PATH" "$SECRETS_FILE"' "$SETUP_SCRIPT" || fail "secret handoff values are not read safely"
 
 if grep -Eq 'setup/(batiflow|hermes)\.env|cp .*\.env' "$SETUP_SCRIPT"; then
   fail "legacy Google Drive env copying is still present"

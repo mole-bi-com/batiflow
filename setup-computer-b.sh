@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SECRETS_FILE="${BATIFLOW_SECRETS_FILE:-$HOME/Downloads/batiflow-computer-b-secrets.txt}"
 CHECK_ONLY=false
 FORCE_SECRETS=false
 
@@ -87,6 +88,18 @@ upsert_env_value() {
   mv "$temp_file" "$file"
 }
 
+first_env_value() {
+  local key="$1" file value
+  shift
+  for file in "$@"; do
+    value="$(read_env_value "$file" "$key")"
+    if [[ -n "$value" ]]; then
+      printf '%s' "$value"
+      return 0
+    fi
+  done
+}
+
 prompt_secret() {
   local label="$1" current="$2" value
   if [[ -n "$current" ]] && ! $FORCE_SECRETS; then
@@ -103,8 +116,14 @@ prompt_secret() {
 
 step "Creating local-only BatiFlow secrets"
 ENV_PATH="$PROJECT_DIR/.env"
-DEEPSEEK_API_KEY="$(prompt_secret "DEEPSEEK_API_KEY" "$(read_env_value "$ENV_PATH" DEEPSEEK_API_KEY)")"
-TELEGRAM_BOT_TOKEN="$(prompt_secret "TELEGRAM_BOT_TOKEN" "$(read_env_value "$ENV_PATH" TELEGRAM_BOT_TOKEN)")"
+if [[ -f "$SECRETS_FILE" ]]; then
+  chmod 600 "$SECRETS_FILE"
+  printf 'Reading Computer B input values from: %s\n' "$SECRETS_FILE"
+else
+  printf 'Secret handoff file not found at %s; missing values will be requested interactively.\n' "$SECRETS_FILE"
+fi
+DEEPSEEK_API_KEY="$(prompt_secret "DEEPSEEK_API_KEY" "$(first_env_value DEEPSEEK_API_KEY "$ENV_PATH" "$SECRETS_FILE")")"
+TELEGRAM_BOT_TOKEN="$(prompt_secret "TELEGRAM_BOT_TOKEN" "$(first_env_value TELEGRAM_BOT_TOKEN "$ENV_PATH" "$SECRETS_FILE")")"
 DEEPSEEK_API_BASE="$(read_env_value "$ENV_PATH" DEEPSEEK_API_BASE)"
 DEEPSEEK_MODEL="$(read_env_value "$ENV_PATH" DEEPSEEK_MODEL)"
 DEEPSEEK_API_BASE="${DEEPSEEK_API_BASE:-https://api.deepseek.com}"
@@ -157,6 +176,7 @@ done
 
 HERMES_ENV="$HERMES_DIR/.env"
 TELEGRAM_HOME_CHANNEL="$(read_env_value "$HERMES_ENV" TELEGRAM_HOME_CHANNEL)"
+TELEGRAM_HOME_CHANNEL="${TELEGRAM_HOME_CHANNEL:-$(read_env_value "$SECRETS_FILE" TELEGRAM_HOME_CHANNEL)}"
 if [[ -z "$TELEGRAM_HOME_CHANNEL" ]]; then
   read -r -p "Enter TELEGRAM_HOME_CHANNEL chat ID for Hermes (leave blank to skip): " TELEGRAM_HOME_CHANNEL
 fi
@@ -178,4 +198,5 @@ printf 'Vault: %s\nProject: %s\n' "$VAULT_PATH" "$PROJECT_DIR"
 printf '\nComplete each browser login once:\n'
 printf '  cd %q\n' "$PROJECT_DIR"
 printf '  npm run auth:x\n  npm run auth:threads\n  npm run auth:instagram\n  npm run auth:linkedin\n  npm run auth:youtube\n'
-printf '\nLegacy secret backups in %s/setup/*.env are no longer used and should be deleted after confirming Computer B works.\n' "$VAULT_PATH"
+printf '\nAfter confirming Computer B works, delete the handoff file: %s\n' "$SECRETS_FILE"
+printf 'Legacy secret backups in %s/setup/*.env are no longer used and should also be deleted.\n' "$VAULT_PATH"
