@@ -21,6 +21,8 @@ scrap/
 vault/Inbox/
 vault/.obsidian/workspace*
 vault/.obsidian/cache
+# Reasoning traces are bulky, keep only .md files in git
+**/reasoning_trace.txt
 
 # macOS system files
 .DS_Store

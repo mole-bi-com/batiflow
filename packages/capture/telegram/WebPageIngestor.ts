@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { chromium } from 'playwright';
 import { LlmAnalysisResult, LlmProcessor, mergeFollowupAnalysis } from '../llm/LlmProcessor';
+import { saveToVault, saveTrace, generateCrossReferences, UnifiedNoteData } from '../utils/vaultWriter';
 
 export interface WebPageIngestResult {
   title: string;
@@ -43,13 +44,13 @@ export class WebPageIngestor {
       throw new Error('웹페이지 분석 결과를 생성하지 못했습니다. DeepSeek API 설정을 확인해 주세요.');
     }
 
-    const markdown = this.formatMarkdown(pageContent, llmResult.analysis);
-    const markdownPath = this.save(pageContent, markdown, llmResult.reasoning);
+    const { analysis, reasoning } = llmResult;
+    const markdownPath = this.save(pageContent, analysis, reasoning);
 
     return {
       title: pageContent.title,
       url: pageContent.url,
-      summary: llmResult.analysis.summary,
+      summary: analysis.summary,
       markdownPath
     };
   }
@@ -159,49 +160,52 @@ export class WebPageIngestor {
     }
   }
 
-  private formatMarkdown(page: WebPageContent, analysis: LlmAnalysisResult): string {
-    return `---
-title: "${page.title.replace(/"/g, '\\"')}"
-source: "${page.url}"
-author: "${page.author.replace(/"/g, '\\"')}"
-captured_at: "${new Date().toISOString()}"
-tags: [${analysis.tags.map(tag => `"${tag.replace(/"/g, '\\"')}"`).join(', ')}]
----
-
-# ${page.title}
-
-> ${page.description || 'No description provided.'}
->
-> [원문 보기](${page.url})
-
-## 핵심 요약
-
-${analysis.summary}
-
-## 핵심 개념
-
-${analysis.ner.key_concepts.map(concept => `- ${concept}`).join('\n') || '- 없음'}
-
-## 원문
-
-${page.body}
-`;
-  }
-
-  private save(page: WebPageContent, markdown: string, reasoning: string): string {
-    const date = new Date().toISOString().split('T')[0];
-    const safeTitle = page.title.replace(/[/\\?%*:|"<>]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 100) || 'Untitled';
-    const id = crypto.createHash('sha256').update(page.url).digest('hex').slice(0, 12);
+  /**
+   * Save using unified format: no raw scrap in vault, only frontmatter + analysis body.
+   */
+  private save(page: WebPageContent, analysis: LlmAnalysisResult, reasoning: string): string {
+    const todayStr = new Date().toISOString().split('T')[0];
+    const nowISO = new Date().toISOString();
     const vaultBase = process.env.OBSIDIAN_VAULT_PATH || path.join(this.projectRoot, 'vault');
-    const vaultDir = path.join(vaultBase, 'Web', date);
-    const scrapDir = path.join(this.projectRoot, 'scrap', 'web', id);
-    fs.mkdirSync(vaultDir, { recursive: true });
-    fs.mkdirSync(scrapDir, { recursive: true });
 
-    const markdownPath = path.join(vaultDir, `${safeTitle}.md`);
-    fs.writeFileSync(markdownPath, markdown, 'utf8');
-    fs.writeFileSync(path.join(scrapDir, 'page.md'), markdown, 'utf8');
+    // Build clean body (no raw scrap text)
+    const cleanBody = [
+      `## 핵심 요약\n\n${analysis.summary}\n`,
+      `## 핵심 개념\n\n${analysis.ner.key_concepts.map((c: string) => `- ${c}`).join('\n') || '- 없음'}\n`,
+    ].join('\n');
+
+    const noteData: UnifiedNoteData = {
+      title: page.title,
+      source: page.url,
+      source_type: 'web',
+      captured_at: nowISO,
+      date: todayStr,
+      author: page.author,
+      author_url: page.url,
+      tags: analysis.tags || [],
+      domains: [],
+      people: analysis.ner.people || [],
+      organizations: analysis.ner.organizations || [],
+      products: analysis.ner.products_or_repos || [],
+      concepts: analysis.ner.key_concepts || [],
+      summary: analysis.summary || '',
+      body: cleanBody,
+      verification_score: analysis.extraction_audit.score,
+    };
+
+    const notePath = saveToVault(vaultBase, noteData);
+    saveTrace(vaultBase, noteData, reasoning);
+    generateCrossReferences(vaultBase, noteData, notePath);
+
+    // Also save raw scrap to scrap/ for debugging
+    const id = crypto.createHash('sha256').update(page.url).digest('hex').slice(0, 12);
+    const scrapDir = path.join(this.projectRoot, 'scrap', 'web', id);
+    if (!fs.existsSync(scrapDir)) {
+      fs.mkdirSync(scrapDir, { recursive: true });
+    }
+    fs.writeFileSync(path.join(scrapDir, 'page.md'), page.body, 'utf8');
     fs.writeFileSync(path.join(scrapDir, 'reasoning_trace.txt'), reasoning, 'utf8');
-    return markdownPath;
+
+    return notePath;
   }
 }
