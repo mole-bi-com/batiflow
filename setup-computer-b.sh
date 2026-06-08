@@ -208,5 +208,19 @@ printf 'Vault: %s\nProject: %s\n' "$VAULT_PATH" "$PROJECT_DIR"
 printf '\nComplete each browser login once:\n'
 printf '  cd %q\n' "$PROJECT_DIR"
 printf '  npm run auth:x\n  npm run auth:threads\n  npm run auth:instagram\n  npm run auth:linkedin\n  npm run auth:youtube\n'
-printf '\nAfter confirming Computer B works, delete the handoff file: %s\n' "$SECRETS_FILE"
+step "Importing Hermes cron jobs from Computer A backup"
+CRON_IMPORT="$VAULT_PATH/setup/hermes-cron-import.sh"
+if [[ -f "$CRON_IMPORT" ]]; then
+  printf 'Cron import script found. Run it manually after setup:\n  bash %q\n\n' "$CRON_IMPORT"
+  printf 'Or run now (y/N): '
+  read -r RUN_CRON_IMPORT
+  if [[ "$RUN_CRON_IMPORT" =~ ^[Yy]$ ]]; then
+    bash "$CRON_IMPORT"
+  fi
+else
+  printf 'No cron import script found. Setup the cron jobs manually via: hermes cron create ...\n'
+  printf 'See vault/setup/README.md for the cron job list.\n'
+fi
+
+printf 'After confirming Computer B works, delete the handoff file: %s\n' "$SECRETS_FILE"
 printf 'Legacy secret backups in %s/setup/*.env are no longer used and should also be deleted.\n' "$VAULT_PATH"

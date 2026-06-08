@@ -7,12 +7,8 @@ import { runBatiFlowCapture } from '../index';
 import { ProfileManager } from '../cdp/ProfileManager';
 import { ChromeLauncher } from '../cdp/ChromeLauncher';
 import { TabPool } from '../cdp/TabPool';
-import { XListParser } from '../sources/x/XListParser';
-import { LinkedInListParser } from '../sources/linkedin/LinkedInListParser';
+import { LlmProcessor } from '../llm/LlmProcessor';
 import { ThreadsListParser } from '../sources/threads/ThreadsListParser';
-import { InstagramListParser } from '../sources/instagram/InstagramListParser';
-import { YoutubePlaylistParser, YoutubePlaylistItem } from '../youtube/YoutubePlaylistParser';
-import { isOlderThan24Hours } from '../utils/date';
 import * as dotenv from 'dotenv';
 
 // Load environment variables
@@ -221,15 +217,18 @@ export class IngestWorker {
     }>;
     reportPath?: string;
   }> {
-    console.log('\n🔄 [IngestWorker] Initializing Automated Multi-Platform Sync...');
+    console.log('🔄 [IngestWorker] Initializing Automated Multi-Platform Sync...');
     const registry = this.loadRegistry();
-    const newUrls: string[] = [];
-    const ytVideos: YoutubePlaylistItem[] = [];
+    const llmProcessor = new LlmProcessor();
 
-    // 1. Process X/Twitter
+    // Stage 1: Collect candidate entries from all platforms
+    // Each entry: { url, textPreview, author, datetime }
+    const candidateEntries: Array<{ url: string; textPreview: string; author: string; datetime: string }> = [];
+
+    // 1. Process X/Twitter — Home Timeline (팔로우 계정 24h 내 새 글)
     const xSession = this.profileManager.loadAndDecryptSession('x');
     if (xSession && xSession.length > 0) {
-      console.log('\n[IngestWorker] Scanning X (Twitter) Likes...');
+      console.log('\n[IngestWorker] Scanning X Home Timeline for new posts (24h)...');
       const xLauncher = new ChromeLauncher({ headless: false });
       const xPool = new TabPool();
       try {
@@ -239,78 +238,126 @@ export class IngestWorker {
         const { Network } = rawClient;
         await Network.setCookies({ cookies: xSession });
 
-        const xParser = new XListParser(client);
-        console.log('[IngestWorker] Navigating to x.com to resolve username dynamically...');
-        await client.navigate('https://x.com');
-        await new Promise(resolve => setTimeout(resolve, 4000));
+        console.log('[IngestWorker] Navigating to X home timeline...');
+        await client.navigate('https://x.com/home');
+        await new Promise(resolve => setTimeout(resolve, 5000));
         
-        const username = await client.evaluate<string>(`
+        // Try clicking "Following" tab for chronological order
+        try {
+          await client.evaluate(`
+            (() => {
+              const tabs = document.querySelectorAll('a[role="tab"]');
+              for (const tab of tabs) {
+                if (tab.textContent?.toLowerCase().includes('following')) {
+                  tab.click();
+                  return true;
+                }
+              }
+              // Alternative: div[role="tablist"] > div[role="presentation"]
+              return false;
+            })()
+          `);
+          console.log('[IngestWorker] Clicked "Following" tab for chronological feed.');
+          await new Promise(resolve => setTimeout(resolve, 3000));
+        } catch {
+          console.log('[IngestWorker] Could not click Following tab, using default feed.');
+        }
+
+        // Scroll aggressively to load more tweets
+        console.log('[IngestWorker] Scrolling timeline to load posts...');
+        for (let i = 0; i < 8; i++) {
+          await client.evaluate('window.scrollBy(0, 1500)');
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+        await client.evaluate('window.scrollTo({ top: 0 })');
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        // Extract tweet entries (URL + textPreview + author + datetime), filter by 24h
+        const xRawJson = await client.evaluate<string>(`
           (() => {
-            const profileLink = document.querySelector('a[data-testid="AppTabBar_Profile_Link"]') || 
-                                document.querySelector('[data-testid="SideNav_AccountSidebar_ProfileLink"]');
-            if (profileLink) {
-              const href = profileLink.getAttribute('href') || '';
-              return href.replace('/', '').trim();
+            const now = Date.now();
+            const twentyFourHoursAgo = now - 24 * 60 * 60 * 1000;
+            const results = [];
+
+            const articles = document.querySelectorAll('article[data-testid="tweet"]');
+            for (const article of articles) {
+              // Extract tweet URL
+              const link = article.querySelector('a[href*="/status/"]');
+              if (!link) continue;
+              const href = (link as HTMLAnchorElement).href;
+              try {
+                const urlObj = new URL(href);
+                const pathParts = urlObj.pathname.split('/').filter(Boolean);
+                const statusIdx = pathParts.indexOf('status');
+                if (statusIdx === -1 || !pathParts[statusIdx + 1]) continue;
+                const id = pathParts[statusIdx + 1];
+                const afterId = pathParts[statusIdx + 2];
+                if (!/^[0-9]+$/.test(id) || afterId) continue;
+              } catch { continue; }
+
+              // Extract timestamp
+              const timeEl = article.querySelector('time');
+              if (!timeEl) continue;
+              const datetime = timeEl.getAttribute('datetime');
+              if (!datetime) continue;
+              const tweetTime = new Date(datetime).getTime();
+              if (isNaN(tweetTime)) continue;
+              if (tweetTime < twentyFourHoursAgo) continue;
+
+              // Canonical URL
+              const urlObj = new URL(href);
+              const url = urlObj.origin + urlObj.pathname;
+
+              // Extract author handle
+              let author = 'Unknown';
+              const authorLink = article.querySelector('a[role="link"]');
+              if (authorLink && authorLink.textContent) {
+                const parts = authorLink.textContent.trim().split(/\\s+/);
+                author = parts.find(p => p.startsWith('@')) || parts[0] || 'Unknown';
+              }
+
+              // Extract text preview (~250 chars)
+              let textPreview = '';
+              const textDiv = article.querySelector('[data-testid="tweetText"]');
+              if (textDiv && textDiv.textContent) {
+                textPreview = textDiv.textContent.slice(0, 250);
+              }
+
+              results.push(JSON.stringify({ url, textPreview: textPreview || '(no text)', author, datetime }));
             }
-            return '';
+            return JSON.stringify(results);
           })()
         `);
-        
-        if (!username) {
-          throw new Error('Failed to resolve logged-in X username. Please check your credentials/cookies.');
+
+        let xEntries: Array<{ url: string; textPreview: string; author: string; datetime: string }> = [];
+        try {
+          xEntries = JSON.parse(xRawJson);
+        } catch {
+          console.error('[IngestWorker] Failed to parse X entries JSON.');
+          xEntries = [];
         }
-        
-        console.log(`[IngestWorker] Resolved username: @${username}`);
-        const likesUrl = `https://x.com/${username}/likes`;
-        const xUrls = await xParser.parseList(likesUrl);
-        xUrls.forEach(url => {
-          if (!registry.processedUrls[url] && !newUrls.includes(url)) {
-            newUrls.push(url);
+
+        console.log(`[IngestWorker] Found ${xEntries.length} tweets from followed accounts within 24h.`);
+        xEntries.forEach(entry => {
+          if (!registry.processedUrls[entry.url]) {
+            candidateEntries.push(entry);
+          } else {
+            console.log(`  (skipped, already processed: ${entry.url})`);
           }
         });
 
         await xPool.releaseTab(client);
         xLauncher.kill();
       } catch (e: any) {
-        console.error(`⚠️ [IngestWorker] X scanning failed: ${e.message}`);
+        console.error(`⚠️ [IngestWorker] X timeline scanning failed: ${e.message}`);
         xLauncher.kill();
       }
     }
 
-    // 2. Process LinkedIn
-    const liSession = this.profileManager.loadAndDecryptSession('linkedin');
-    if (liSession && liSession.length > 0) {
-      console.log('\n[IngestWorker] Scanning LinkedIn Saved Posts...');
-      const liLauncher = new ChromeLauncher({ headless: true });
-      const liPool = new TabPool();
-      try {
-        await liLauncher.launch();
-        const client = await liPool.acquireTab();
-        const rawClient = client.getRawClient();
-        const { Network } = rawClient;
-        await Network.clearBrowserCookies();
-        await Network.setCookies({ cookies: liSession });
-
-        const liParser = new LinkedInListParser(client);
-        const liUrls = await liParser.parseList();
-        liUrls.forEach(url => {
-          if (!registry.processedUrls[url] && !newUrls.includes(url)) {
-            newUrls.push(url);
-          }
-        });
-
-        await liPool.releaseTab(client);
-        liLauncher.kill();
-      } catch (e: any) {
-        console.error(`⚠️ [IngestWorker] LinkedIn scanning failed: ${e.message}`);
-        liLauncher.kill();
-      }
-    }
-
-    // 3. Process Threads
+    // 2. Process Threads — Following Timeline (팔로우 계정 24h 내 새 글)
     const threadsSession = this.profileManager.loadAndDecryptSession('threads');
     if (threadsSession && threadsSession.length > 0) {
-      console.log('\n[IngestWorker] Scanning Threads Likes...');
+      console.log('\\n[IngestWorker] Scanning Threads Following feed (24h)...');
       const threadsLauncher = new ChromeLauncher({ headless: false });
       const threadsPool = new TabPool();
       try {
@@ -322,10 +369,18 @@ export class IngestWorker {
         await Network.setCookies({ cookies: threadsSession });
 
         const threadsParser = new ThreadsListParser(client);
-        const threadsUrls = await threadsParser.parseList();
-        threadsUrls.forEach(url => {
-          if (!registry.processedUrls[url] && !newUrls.includes(url)) {
-            newUrls.push(url);
+        const threadsEntries = await threadsParser.parseList();
+        console.log(`[IngestWorker] Found ${threadsEntries.length} Threads posts from Following feed within 24h.`);
+        threadsEntries.forEach(entry => {
+          if (!registry.processedUrls[entry.url]) {
+            candidateEntries.push({
+              url: entry.url,
+              textPreview: entry.textPreview,
+              author: entry.author,
+              datetime: entry.datetime
+            });
+          } else {
+            console.log(`  (skipped, already processed: ${entry.url})`);
           }
         });
 
@@ -336,102 +391,42 @@ export class IngestWorker {
         threadsLauncher.kill();
       }
     }
+    // (Instagram/YouTube 자동수집 제거됨 — 링크/이미지 공유 시에만 분석)
 
-    // 4. Process Instagram
-    const igSession = this.profileManager.loadAndDecryptSession('instagram');
-    if (igSession && igSession.length > 0) {
-      console.log('\n[IngestWorker] Scanning Instagram Saved Posts...');
-      const igLauncher = new ChromeLauncher({ headless: false });
-      const igPool = new TabPool();
-      try {
-        await igLauncher.launch();
-        const client = await igPool.acquireTab();
-        const rawClient = client.getRawClient();
-        const { Network } = rawClient;
-        await Network.clearBrowserCookies();
-        await Network.setCookies({ cookies: igSession });
+    // ──────────────────────────────────────────────────────────────
+    // Stage 2: AI Relevance Filtering
+    // ──────────────────────────────────────────────────────────────
+    console.log(`\n🧠 [IngestWorker] Collected ${candidateEntries.length} total candidate posts from all platforms.`);
+    console.log('[IngestWorker] Running AI relevance filter against research profile...');
 
-        const igParser = new InstagramListParser(client);
-        const igUrls = await igParser.parseList();
-        igUrls.forEach(url => {
-          if (!registry.processedUrls[url] && !newUrls.includes(url)) {
-            newUrls.push(url);
-          }
-        });
+    const relevantEntries = await llmProcessor.batchJudgeRelevance(
+      candidateEntries.map(e => ({ url: e.url, textPreview: e.textPreview, author: e.author })),
+      0.4  // threshold: 0.4 이상만 통과
+    );
 
-        await igPool.releaseTab(client);
-        igLauncher.kill();
-      } catch (e: any) {
-        console.error(`⚠️ [IngestWorker] Instagram scanning failed: ${e.message}`);
-        igLauncher.kill();
-      }
-    }
+    console.log(`\n📬 [IngestWorker] AI filter passed: ${relevantEntries.length}/${candidateEntries.length} posts deemed relevant.`);
 
-    // 4.5. Process YouTube Watch Later
-    const youtubeSession = this.profileManager.loadAndDecryptSession('youtube');
-    if (youtubeSession && youtubeSession.length > 0) {
-      console.log('\n[IngestWorker] Scanning YouTube Watch Later Playlist...');
-      const ytLauncher = new ChromeLauncher({ headless: false });
-      const ytPool = new TabPool();
-      try {
-        await ytLauncher.launch();
-        const client = await ytPool.acquireTab();
-        const rawClient = client.getRawClient();
-        const { Network } = rawClient;
-        await Network.clearBrowserCookies();
-        await Network.setCookies({ cookies: youtubeSession });
+    // Build a set of relevant URLs for quick lookup
+    const relevanceMap = new Map<string, { score: number; reason: string }>();
+    relevantEntries.forEach(r => relevanceMap.set(r.url, { score: r.relevanceScore, reason: r.relevanceReason }));
 
-        const ytParser = new YoutubePlaylistParser(client);
-        const parsedVideos = await ytParser.parseList();
-        ytVideos.push(...parsedVideos);
-        
-        const hasYoutubeProcessed = Object.keys(registry.processedUrls).some(url => url.includes('youtube.com') || url.includes('youtu.be'));
-        
-        if (!hasYoutubeProcessed && parsedVideos.length > 0) {
-          console.log(`[IngestWorker] Initial run detected for YouTube. Marking ${parsedVideos.length} existing playlist videos as processed in registry to skip historic content...`);
-          for (const video of parsedVideos) {
-            registry.processedUrls[video.url] = new Date().toISOString();
-          }
-        } else {
-          for (const video of parsedVideos) {
-            const url = video.url;
-            if (!registry.processedUrls[url] && !newUrls.includes(url)) {
-              if (isOlderThan24Hours(video.addedText)) {
-                console.log(`[IngestWorker] Skipping YouTube video because it was added more than 24 hours ago: "${video.title}" (${video.addedText})`);
-                // Mark it as processed in registry so we don't scan it again next time
-                registry.processedUrls[url] = new Date().toISOString();
-                continue;
-              }
-              console.log(`[IngestWorker] Found new YouTube Watch Later video to sync: "${video.title}"`);
-              newUrls.push(url);
-            }
-          }
-        }
+    const newUrls = relevantEntries.map(r => r.url);
 
-        await ytPool.releaseTab(client);
-        ytLauncher.kill();
-      } catch (e: any) {
-        console.error(`⚠️ [IngestWorker] YouTube scanning failed: ${e.message}`);
-        ytLauncher.kill();
-      }
-    }
-
-    // 5. Ingest and Capture New Posts sequentially
-    console.log('\n⏳ Cooldown delay (3.5s) to allow previous Chrome sessions to fully terminate...');
-    await new Promise(resolve => setTimeout(resolve, 3500));
-    console.log(`\n📬 [IngestWorker] Found ${newUrls.length} new bookmark URLs to ingest.`);
-
-    // ✅ 신규 항목이 없으면 리포트 생성 없이 바로 종료
+    // 3. Cooldown and begin capture
     if (newUrls.length === 0) {
       this.saveRegistry(registry);
-      console.log('✅ [IngestWorker] 모든 플랫폼이 최신 상태입니다. 새 인사이트가 없습니다.');
-      this.notifyMacUser('BatiFlow 동기화 완료: 새로운 인사이트가 없습니다 ✨');
+      console.log('✅ [IngestWorker] AI filter passed no relevant posts. Sync complete.');
+      this.notifyMacUser('BatiFlow 동기화 완료: 관련성 높은 새 포스트가 없습니다 🧠');
       return {
         successCount: 0,
         totalCount: 0,
         capturedItems: []
       };
     }
+
+    console.log('⏳ Cooldown delay (3.5s) to allow previous Chrome sessions to fully terminate...');
+    await new Promise(resolve => setTimeout(resolve, 3500));
+    console.log(`\n📬 [IngestWorker] Capturing ${newUrls.length} AI‑filtered relevant posts...`);
     
     const capturedItems: Array<{
       url: string;
@@ -521,8 +516,7 @@ export class IngestWorker {
           }
 
           if (url.includes('youtube.com') || url.includes('youtu.be')) {
-            const matchedVideo = ytVideos.find(v => v.url === url);
-            author = matchedVideo ? matchedVideo.channel : 'YouTube';
+            author = 'YouTube';
             if (!summary) summary = 'YouTube video successfully analyzed.';
             tags = ['youtube', 'video'];
           }
@@ -532,7 +526,7 @@ export class IngestWorker {
             platform: url.includes('youtube.com') || url.includes('youtu.be') ? 'YouTube' :
                       url.includes('x.com') || url.includes('twitter.com') ? 'X (Twitter)' :
                       url.includes('threads.net') || url.includes('threads.com') ? 'Threads' :
-                      url.includes('instagram.com') ? 'Instagram' : 'LinkedIn',
+                      url.includes('instagram.com') ? 'Instagram' : 'Unknown',
             author,
             summary,
             tags,
@@ -557,9 +551,8 @@ export class IngestWorker {
     const reportFilename = `Intelligence Sync Report - ${dateFileStr}_${timeFileStr}.md`;
     
     const projectDir = path.resolve(__dirname, '../../..');
-    const todayStr = new Date().toISOString().split('T')[0]; // "2026-05-23"
     const vaultBaseDir = process.env.OBSIDIAN_VAULT_PATH || path.join(projectDir, 'vault');
-    const vaultReportsDir = path.join(vaultBaseDir, 'Reports', todayStr);
+    const vaultReportsDir = path.join(vaultBaseDir, 'Reports');
     if (!fs.existsSync(vaultReportsDir)) {
       fs.mkdirSync(vaultReportsDir, { recursive: true });
     }
@@ -569,6 +562,7 @@ export class IngestWorker {
 # 🧠 BatiFlow Brain Engine Sync Report
 > **Sync Timestamp**: \`${timestampStr}\`
 > **Sync Result**: Successfully imported \`${successCount} / ${newUrls.length}\` new insights
+> **AI Relevance Filter**: \`${relevantEntries.length}/${candidateEntries.length}\` posts passed (threshold 0.4)
 
 ---
 
@@ -578,15 +572,12 @@ export class IngestWorker {
       reportMarkdown += `## 📊 Platform Sync Overview
 - X (Twitter): \`0 new items\`
 - Threads: \`0 new items\`
-- LinkedIn: \`0 new items\`
-- Instagram: \`0 new items\`
-- YouTube: \`0 new items\`
 
 > [!TIP]
-> **All platform feeds are completely up to date!** ✨ No new bookmarks or liked posts were found.
+> **AI Relevance filter found no relevant posts in this cycle.** ✨ Try adjusting the threshold or check back later.
 `;
     } else {
-      const counts = { 'X (Twitter)': 0, 'Threads': 0, 'LinkedIn': 0, 'Instagram': 0, 'YouTube': 0 };
+      const counts = { 'X (Twitter)': 0, 'Threads': 0 };
       capturedItems.forEach(item => {
         const plat = item.platform as keyof typeof counts;
         if (counts[plat] !== undefined) counts[plat]++;
@@ -595,27 +586,35 @@ export class IngestWorker {
       reportMarkdown += `## 📊 Platform Sync Overview
 - **X (Twitter)**: \`${counts['X (Twitter)']} new items\`
 - **Threads**: \`${counts['Threads']} new items\`
-- **LinkedIn**: \`${counts['LinkedIn']} new items\`
-- **Instagram**: \`${counts['Instagram']} new items\`
-- **YouTube**: \`${counts['YouTube']} new items\`
 
 ---
 
-## 📥 Newly Captured Insights
+## 📥 AI‑Filtered Insights (by Relevance)
 
 `;
 
-      capturedItems.forEach(item => {
-        reportMarkdown += `### 👤 ${item.author} (${item.platform})
+      // Sort by score descending (relevance first)
+      const sorted = [...capturedItems].sort((a, b) => {
+        const aRel = relevanceMap.get(a.url)?.score || 0;
+        const bRel = relevanceMap.get(b.url)?.score || 0;
+        return bRel - aRel;
+      });
+
+      sorted.forEach(item => {
+        const relInfo = relevanceMap.get(item.url);
+        const relScore = relInfo?.score ?? 0.5;
+        const relReason = relInfo?.reason ?? '';
+        const stars = relScore >= 0.8 ? '⭐⭐' : relScore >= 0.6 ? '⭐' : '';
+
+        reportMarkdown += `### ${stars} ${item.author} (${item.platform})
+- **Relevance**: \`${(relScore * 100).toFixed(0)}%\` — ${relReason}
 - **Original Link**: [View Post](${item.url})
-- **Reality Checker Score**: \`${item.score} / 1.0\`
-- **Tags**: ${item.tags.map(t => `\`#${t}\``).join(' ')}
+- **Tags**: ${item.tags.map(t => '\`#' + t + '\`').join(' ')}
 
 > [!NOTE] 핵심 요약 (Executive Summary)
 > ${item.summary || 'DeepSeek analysis was not performed or failed for this item.'}
 
 ---
-
 `;
       });
     }

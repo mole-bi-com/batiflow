@@ -478,4 +478,161 @@ ${transcript}
       return null;
     }
   }
+
+  // ──────────────────────────────────────────────────
+  //  User Interest Profile (AI Relevance Filtering)
+  // ──────────────────────────────────────────────────
+
+  public static readonly USER_INTEREST_PROFILE = `사용자의 미션: 6개월 내 양자 바이오 기업 이직 → 1조 부자
+
+이 사용자는 아래 정보를 찾고 있다 (관련도 높을수록 높은 점수):
+
+【1순위: 핵심 타겟 — 1.0점 만점 기준 0.8~1.0】
+- 양자생명공학(quantum biology) 스타트업/기업: 펀딩, 제품 출시, 임상, IPO, 채용
+- 라디컬 쌍(radical pair) 기술 기반 센서/진단/이미징 회사
+- 양자센싱(quantum sensing) 바이오 기업 (NV diamond, OPM 등)
+- 양자 AI 신약개발(quantum AI drug discovery) 스타트업
+- 계산 양자생물학(computational quantum biology) 플랫폼 회사
+- 위 기업들의 창업자, CTO, CSO, 리드 사이언티스트 인터뷰/발언
+
+【2순위: 생태계 인텔리전스 — 0.5~0.7】
+- 양자 바이오 분야 VC 투자 동향, 펀딩 뉴스
+- Big Pharma의 양자 기술 도입/파트너십
+- 양자 하드웨어 발전이 바이오 응용에 미치는 영향
+- 주요 연구소/대학의 양자생물학 기술이전 소식
+- 양자생명공학 컨퍼런스, 밋업, 채용 이벤트
+
+【3순위: 주변 정보 — 0.3~0.5】
+- AI 에이전트/자동화 도구 (생산성 향상)
+- 창업/스타트업 일반 뉴스 (양자 아닌 일반 바이오텍 포함)
+- 건강 최적화, 수명 연장, 바이오해킹
+- 계산생물학/생물정보학 일반
+
+【무시: 0.0~0.2】
+- 연예인, 스포츠, 정치 일반
+- 밈, 개인적 일상
+- 양자와 무관한 일반 AI 뉴스
+- 암호화폐/블록체인 (관련 없음)
+- 부동산/주식 일반`;
+
+  /**
+   * batchJudgeRelevance
+   *
+   * Given a list of candidate posts (each with url, textPreview, author),
+   * asks DeepSeek to score each one against the USER_INTEREST_PROFILE.
+   *
+   * Returns only the entries whose relevance_score >= threshold (default 0.4).
+   * Threshold controls how strictly we filter — 0.4 = moderate relevance.
+   */
+  public async batchJudgeRelevance(
+    entries: Array<{ url: string; textPreview: string; author: string }>,
+    threshold: number = 0.4
+  ): Promise<Array<{ url: string; textPreview: string; author: string; relevanceScore: number; relevanceReason: string }>> {
+    if (entries.length === 0) return [];
+    if (!this.isConfigured()) {
+      console.log('⚠️ [LlmProcessor] DeepSeek not configured — bypassing AI relevance filter.');
+      return entries.map(e => ({ ...e, relevanceScore: 0.5, relevanceReason: 'LLM unavailable; passed by default' }));
+    }
+
+    // Build a compact batch — each entry gets a short ID
+    const items = entries.map((e, i) => ({ id: i + 1, ...e }));
+    const list = items.map(i => `[${i.id}] Author: ${i.author}\n    Preview: ${i.textPreview.slice(0, 300)}\n    URL: ${i.url}`).join('\n\n');
+
+    const systemPrompt = `You are a research relevance filter. Your job is to score social media posts against a researcher's interest profile.
+
+## Researcher Interest Profile
+${LlmProcessor.USER_INTEREST_PROFILE}
+
+## Scoring Rules
+- Score each post from 0.0 (completely irrelevant) to 1.0 (highly relevant).
+- 0.0–0.2: unrelated (celebrity gossip, sports, casual life posts, memes)
+- 0.3–0.5: vaguely related (tech-adjacent, general science, AI hype without substance)
+- 0.6–0.7: clearly relevant (touches one of the research domains above, substantial content)
+- 0.8–1.0: highly relevant (directly discusses quantum biology, radical pair, quantum precision medicine, quantum sensing, or computational quantum biology with new insights)
+- Consider the author's expertise and the post's substance.
+- Consider the presence of technical depth, research citations, mechanistic explanations.
+
+## Output Format
+Return ONLY a JSON array. No markdown, no explanation.
+
+[
+  {"id": 1, "relevanceScore": 0.85, "relevanceReason": "Discusses radical pair mechanism and avian magnetoreception — directly in core research domain"},
+  {"id": 2, "relevanceScore": 0.0, "relevanceReason": "Personal post about weekend plans; completely irrelevant"}
+]`;
+
+    const userPrompt = `Batch of ${items.length} social media posts to score:\n\n${list}`;
+
+    try {
+      const endpoint = `${this.apiBase}/chat/completions`;
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.apiKey}`
+        },
+        body: JSON.stringify({
+          model: this.model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt }
+          ],
+          max_tokens: 2048,
+          temperature: 0.1  // Low temperature for consistent scoring
+        })
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`DeepSeek API returned status ${response.status}: ${errorText}`);
+      }
+
+      const responseData: any = await response.json();
+      const content = responseData.choices?.[0]?.message?.content || '';
+
+      // Parse JSON safely
+      let cleaned = content.trim();
+      if (cleaned.startsWith('```')) {
+        const match = cleaned.match(/```(?:json)?([\s\S]*?)```/);
+        if (match && match[1]) cleaned = match[1].trim();
+      }
+
+      const scores: Array<{ id: number; relevanceScore: number; relevanceReason: string }> = JSON.parse(cleaned);
+
+      // Merge scores back with original entries
+      const result = items.map(item => {
+        const scored = scores.find(s => s.id === item.id);
+        return {
+          url: item.url,
+          textPreview: item.textPreview,
+          author: item.author,
+          relevanceScore: scored?.relevanceScore ?? 0.3,
+          relevanceReason: scored?.relevanceReason ?? 'No LLM judgement; conservative default'
+        };
+      });
+
+      // Filter by threshold
+      const passed = result.filter(r => r.relevanceScore >= threshold);
+      const total = result.length;
+      const passedCount = passed.length;
+      console.log(`[LlmProcessor] AI Relevance Filter: ${passedCount}/${total} posts passed (threshold=${threshold}).`);
+      if (total > passedCount) {
+        const skipped = result.filter(r => r.relevanceScore < threshold);
+        skipped.forEach(s => console.log(`  ✗ SKIP [${s.relevanceScore.toFixed(2)}] ${s.author}: ${s.relevanceReason}`));
+      }
+      passed.forEach(p => console.log(`  ✓ PASS [${p.relevanceScore.toFixed(2)}] ${p.author}: ${p.relevanceReason}`));
+
+      return passed;
+
+    } catch (error: any) {
+      console.error(`❌ [LlmProcessor] Batch relevance judgment failed: ${error.message}`);
+      // Fallback: return all entries at moderate score
+      return items.map(item => ({
+        url: item.url,
+        textPreview: item.textPreview,
+        author: item.author,
+        relevanceScore: 0.5,
+        relevanceReason: 'Batch judgement failed; passed by default'
+      }));
+    }
+  }
 }
